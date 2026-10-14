@@ -14,13 +14,14 @@ beforeEach(() => {
 })
 
 describe("error handler", () => {
-  it("带 sessionKey 的错误 → 兜底话术发回会话", async () => {
+  it("显式 userVisible=true + sessionKey → 兜底话术发回会话", async () => {
     registerErrorHandler({ logger: () => {} })
     const p = new Promise<ActionSend>((res) => bus.once("action.send", res))
     bus.emit("error.occurred", {
       scope: "test",
       err: new Error("boom"),
       sessionKey: "qq:7:8",
+      userVisible: true,
     })
     const a = await p
     expect(a.channel).toBe("qq")
@@ -35,10 +36,26 @@ describe("error handler", () => {
       scope: "test",
       err: new Error("boom"),
       sessionKey: "7:8",
+      userVisible: true,
     })
     const a = await p
     expect(a.channel).toBe("qq")
     expect(a.chatId).toBe("7")
+  })
+
+  it("未声明 userVisible 的错误只记日志(后台轮询默认不进群)", async () => {
+    registerErrorHandler({ logger: () => {} })
+    const spy = vi.fn()
+    bus.on("action.send", spy)
+    // 形态同后台轮询:带 channel+chatId 但不声明 userVisible
+    bus.emit("error.occurred", {
+      scope: "topic",
+      err: new Error("fetch failed"),
+      channel: "qq" as const,
+      chatId: "100",
+    })
+    await new Promise((r) => setTimeout(r, 20))
+    expect(spy).not.toHaveBeenCalled()
   })
 
   it("userVisible=false 只记日志不回用户", async () => {

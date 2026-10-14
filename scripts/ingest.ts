@@ -79,7 +79,7 @@ export async function runIngest(
 }
 
 async function main(): Promise<void> {
-  // kb 灌库 CLI:只需 DB_PATH(缺省同 config-store 默认),不依赖其他 env
+  // kb 灌库 CLI:只需 DB_PATH(缺省为 ./data/agent.db),不依赖其他 env
   const db = openDb(process.env.DB_PATH ?? "./data/agent.db")
   const repo = new Repo(db)
   const results = await runIngest(repo, "docs/kb")

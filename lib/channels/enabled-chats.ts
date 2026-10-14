@@ -21,6 +21,18 @@ export function listEnabledChats(cfg: EnablementConfig): ChatRef[] {
   return Array.isArray(cfg.enabledChats) ? cfg.enabledChats : []
 }
 
+/** 当前生效的 QQ 群；加群校验与客服生效范围保持一致。 */
+export function listEnabledQqGroupIds(cfg: EnablementConfig): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const chat of listEnabledChats(cfg)) {
+    if (chat.channel !== "qq" || seen.has(chat.chatId)) continue
+    seen.add(chat.chatId)
+    out.push(chat.chatId)
+  }
+  return out
+}
+
 /** 某通道会话是否在白名单 */
 export function isChatEnabled(
   cfg: EnablementConfig,

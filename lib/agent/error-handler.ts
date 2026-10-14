@@ -71,9 +71,16 @@ function defaultLogError(scope: string, err: unknown, e: ErrorOccurred): void {
   })
 }
 
-/** 是否应向用户发兜底话术 */
+/**
+ * 是否应向用户发兜底话术。
+ *
+ * 默认拒绝:必须由发射方显式声明 userVisible: true(即「这条失败正卡着用户等回复」)。
+ * 反过来(默认允许、后台逐个标 false)才出过事——后台轮询/发送链路顺手带上
+ * channel+chatId 就会往整个群里广播「系统繁忙」,而群里根本没人 @ 过机器人。
+ * 新增发射点时忘了想这个问题,也只会少发一条话术,不会再打扰无关群友。
+ */
 function shouldUserReply(e: ErrorOccurred): boolean {
-  if (e.userVisible === false) return false
+  if (e.userVisible !== true) return false
   if (e.scope === "intent") return false
   // channel.send* 发送失败再回用户会连环炸
   if (e.scope.startsWith("channel.send")) return false

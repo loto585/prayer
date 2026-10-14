@@ -227,6 +227,25 @@ describe("orchestrator", () => {
     )
   })
 
+  it("staleResume 且重试也没拿到新 id → 清掉坏指针,下条不再白撞", async () => {
+    const fakeAgent = {
+      run: vi.fn(async () => ({
+        text: "降级文案",
+        staleResume: true,
+      })),
+    }
+    const store = new SessionStore(repo)
+    store.remember(SK, "sid-dead")
+    registerOrchestrator({
+      agent: fakeAgent as unknown as Agent,
+      store,
+      ackEnabled: false,
+    })
+    bus.emit("message.qualified", qmsg({ messageId: "8", text: "在吗" }))
+    await new Promise((r) => setTimeout(r, 30))
+    expect(store.resumeId(SK)).toBeUndefined()
+  })
+
   it("classify 挂起超过 classifyTimeoutMs → fail-open 归 normal,仍跑 agent 出回复", async () => {
     const fakeAgent = {
       run: vi.fn(async () => ({ text: "回复", sessionId: "s" })),

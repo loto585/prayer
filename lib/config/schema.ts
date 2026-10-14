@@ -50,9 +50,27 @@ export const appConfigSchema = z.object({
     .min(1)
     .max(500)
     .default("多渠道 AI 客服中台"),
+  /** 部署方可配置的客服行为规则；安全边界和系统身份规则仍由代码保证。 */
+  replyRules: z.string().trim().max(4000).default(""),
   onebotWsUrl: z.string().default(""),
   onebotAccessToken: z.string().default(""),
   botQQ: z.number().int().nonnegative().default(0),
+  qqLinkWhitelistEnabled: z.boolean().default(false),
+  qqLinkWhitelist: z.array(z.string().trim().min(1)).default([]),
+  groupRequestEnabled: z.boolean().default(false),
+  groupRequestGroupIds: z.array(z.string().trim().min(1)).default([]),
+  groupRequestRequireOrder: z.boolean().default(true),
+  groupRequestAutoApprove: z.boolean().default(true),
+  groupRequestOrderQueryUrl: z
+    .string()
+    .url()
+    .default("https://rc.cnweb.org/api/bill/query"),
+  groupRequestOrderTimeoutMs: z
+    .number()
+    .int()
+    .min(1000)
+    .max(120000)
+    .default(10000),
   /** 群友 @ 这些客服号时也触发机器人。 */
   extraAtQQs: z.array(z.number().int().positive()).default([]),
   /** 管理命令与通知面；null 表示关闭，与 enabledChats 互斥。 */
@@ -107,9 +125,34 @@ type ParsedAppConfig = z.output<typeof appConfigSchema>
  */
 export type AppConfig = Omit<
   ParsedAppConfig,
-  "brandName" | "brandDescription"
+  | "brandName"
+  | "brandDescription"
+  | "replyRules"
+  | "groupRequestEnabled"
+  | "groupRequestGroupIds"
+  | "groupRequestRequireOrder"
+  | "groupRequestAutoApprove"
+  | "groupRequestOrderQueryUrl"
+  | "groupRequestOrderTimeoutMs"
+  | "qqLinkWhitelistEnabled"
+  | "qqLinkWhitelist"
 > &
-  Partial<Pick<ParsedAppConfig, "brandName" | "brandDescription">>
+  Partial<
+    Pick<
+      ParsedAppConfig,
+      | "brandName"
+      | "brandDescription"
+      | "replyRules"
+      | "groupRequestEnabled"
+      | "groupRequestGroupIds"
+      | "groupRequestRequireOrder"
+      | "groupRequestAutoApprove"
+      | "groupRequestOrderQueryUrl"
+      | "groupRequestOrderTimeoutMs"
+      | "qqLinkWhitelistEnabled"
+      | "qqLinkWhitelist"
+    >
+  >
 export type GroupPolicy = z.output<typeof groupPolicySchema>
 
 export function isConfigRecord(

@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server"
+import { NextRequest, NextResponse } from "next/server"
 import { getRuntime } from "@/lib/runtime"
 import { ok, fail } from "@/lib/api"
 import { getNameCache, type GroupNameRow } from "@/lib/name-cache"
@@ -30,11 +30,14 @@ async function fetchGroupsFresh(): Promise<GroupNameRow[] | null> {
   return groupsInflight
 }
 
-export async function GET(): Promise<NextResponse> {
+export async function GET(req: NextRequest): Promise<NextResponse> {
   const cache = getNameCache()
-  const hit = cache.getGroupsList()
-  if (hit) {
-    return NextResponse.json(ok(hit))
+  const refresh = req.nextUrl.searchParams.get("refresh") === "1"
+  if (!refresh) {
+    const hit = cache.getGroupsList()
+    if (hit) {
+      return NextResponse.json(ok(hit))
+    }
   }
 
   const list = await fetchGroupsFresh()

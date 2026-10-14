@@ -66,6 +66,15 @@ describe("配置 HTTP 边界", () => {
     expect((await response.json()).data.onebotAccessToken).toBe("••••cret")
   })
 
+  it("修改客服身份或回复规则时清理旧会话续接指针", async () => {
+    const repo = new Repo(db)
+    repo.setSessionId("qq:1:2", "old-session")
+    const response = await put({ replyRules: "只称为 Acme 官方客服机器人" })
+    expect(response.status).toBe(200)
+    expect(repo.getResumeId("qq:1:2")).toBeUndefined()
+    expect(repo.getSessionId("qq:1:2")).toBe("old-session")
+  })
+
   it("全量回传掩码不覆盖密钥，管理面不能留在生效列表", async () => {
     const repo = new Repo(db)
     setConfig(repo, { telegramBotToken: "test-token" })

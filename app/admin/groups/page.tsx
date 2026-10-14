@@ -325,7 +325,7 @@ export default function GroupsPage() {
       <SectionCard
         title="会话活动与策略"
         icon={Users}
-        description="可在配置页修改全局默认；表格内可按会话覆盖。管理群只处理 !reset / !resume，不参与客服问答。"
+        description="可在配置页修改全局默认；表格内可按会话覆盖。管理群只处理 /reset、/resume 等管理指令，不参与客服问答。"
       >
         <DataState
           loading={loading}

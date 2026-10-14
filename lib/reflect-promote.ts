@@ -1,8 +1,9 @@
 import { mkdir, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import type { Repo } from "./db/repo"
+import { KB_DIR } from "./kb-path"
 
-/** 升格后正式文档相对路径(相对 docs/kb) */
+/** 升格后正式文档相对路径(相对知识库根) */
 export function promotedDocRel(chunkId: number): string {
   return `promoted/reflection-${chunkId}.md`
 }
@@ -20,7 +21,7 @@ export interface ApplyPromoteOpts {
   repo: Repo
   chunkId: number
   embed: (text: string) => Promise<Float32Array>
-  /** 知识库根目录(含 docs/kb 的上一级 cwd)。缺省 process.cwd() */
+  /** 仓库根(含知识库目录的上一级 cwd)。缺省 process.cwd() */
   cwd?: string
   /** 可注入写盘,测试用 */
   writeFileFn?: (abs: string, body: string) => Promise<void>
@@ -29,7 +30,7 @@ export interface ApplyPromoteOpts {
 
 /**
  * 将一条 human-reflection 升格为正式文档:
- * 1. 写 docs/kb/promoted/reflection-{id}.md
+ * 1. 写 <知识库目录>/promoted/reflection-{id}.md
  * 2. 立即 embed 写入 kb_chunks(doc=相对路径),Agent 检索可命中
  * 3. 物理删除原反思 chunk,避免列表 / 检索残留
  *
@@ -56,7 +57,7 @@ export async function applyPromote(
   const rel = promotedDocRel(chunkId)
   const body = promotedMarkdown(chunkId, entry.content)
   const cwd = opts.cwd ?? process.cwd()
-  const abs = join(cwd, "docs/kb", rel)
+  const abs = join(cwd, KB_DIR, rel)
   const mkdirFn =
     opts.mkdirFn ??
     ((d: string) => mkdir(d, { recursive: true }).then(() => undefined))

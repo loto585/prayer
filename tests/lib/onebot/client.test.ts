@@ -207,6 +207,159 @@ describe("OneBotClient", () => {
     expect(await client.getGroupMemberList(111)).toBeUndefined()
   })
 
+  it("setGroupAddRequest → 发审核 API 并携带拒绝理由", async () => {
+    const port = await startServer((ws) => {
+      ws.on("message", (raw: Buffer) => {
+        const req = JSON.parse(raw.toString())
+        if (req.action === "set_group_add_request") {
+          expect(req.params).toEqual({
+            flag: "flag-1",
+            sub_type: "add",
+            approve: false,
+            reason: "订单号无效或未支付",
+          })
+          ws.send(JSON.stringify({ echo: req.echo, retcode: 0, data: {} }))
+        }
+      })
+    })
+    client = new OneBotClient(`ws://127.0.0.1:${port}`)
+    client.start()
+    await new Promise((r) => setTimeout(r, 50))
+    await expect(
+      client.setGroupAddRequest("flag-1", false, "订单号无效或未支付")
+    ).resolves.toMatchObject({ ok: true, retcode: 0 })
+  })
+
+  it("群发 @全体使用 at 消息段", async () => {
+    const gotAction = new Promise<Record<string, unknown>>((resolve) => {
+      startServer((ws) => {
+        ws.on("message", (raw: Buffer) => {
+          const req = JSON.parse(raw.toString())
+          if (req.action === "send_group_msg") {
+            ws.send(JSON.stringify({ echo: req.echo, retcode: 0 }))
+            resolve(req)
+          }
+        })
+      }).then((port) => {
+        client = new OneBotClient(`ws://127.0.0.1:${port}`)
+        client.start()
+        setTimeout(() => void client!.sendGroupMessage(9, "公告", true), 50)
+      })
+    })
+    const req = await gotAction
+    expect(req.params).toEqual({
+      group_id: 9,
+      message: [
+        { type: "at", data: { qq: "all" } },
+        { type: "text", data: { text: " 公告" } },
+      ],
+    })
+  })
+
+  it("公告 pinned=true → _send_group_notice 带 pinned=1", async () => {
+    const gotAction = new Promise<Record<string, unknown>>((resolve) => {
+      startServer((ws) => {
+        ws.on("message", (raw: Buffer) => {
+          const req = JSON.parse(raw.toString())
+          if (req.action === "_send_group_notice") {
+            ws.send(JSON.stringify({ echo: req.echo, retcode: 0 }))
+            resolve(req)
+          }
+        })
+      }).then((port) => {
+        client = new OneBotClient(`ws://127.0.0.1:${port}`)
+        client.start()
+        setTimeout(() => void client!.setGroupNotice(9, "重要公告", true), 50)
+      })
+    })
+    await expect(gotAction).resolves.toMatchObject({
+      action: "_send_group_notice",
+      params: { group_id: "9", content: "重要公告", pinned: 1 },
+    })
+  })
+
+  it("公告缺省不置顶 → pinned=0", async () => {
+    const gotAction = new Promise<Record<string, unknown>>((resolve) => {
+      startServer((ws) => {
+        ws.on("message", (raw: Buffer) => {
+          const req = JSON.parse(raw.toString())
+          if (req.action === "_send_group_notice") {
+            ws.send(JSON.stringify({ echo: req.echo, retcode: 0 }))
+            resolve(req)
+          }
+        })
+      }).then((port) => {
+        client = new OneBotClient(`ws://127.0.0.1:${port}`)
+        client.start()
+        setTimeout(() => void client!.setGroupNotice(9, "临时公告"), 50)
+      })
+    })
+    await expect(gotAction).resolves.toMatchObject({
+      params: { group_id: "9", content: "临时公告", pinned: 0 },
+    })
+  })
+
+  it("全员禁言 → set_group_whole_ban 带 group_id 与 enable", async () => {
+    const gotAction = new Promise<Record<string, unknown>>((resolve) => {
+      startServer((ws) => {
+        ws.on("message", (raw: Buffer) => {
+          const req = JSON.parse(raw.toString())
+          if (req.action === "set_group_whole_ban") {
+            ws.send(JSON.stringify({ echo: req.echo, retcode: 0 }))
+            resolve(req)
+          }
+        })
+      }).then((port) => {
+        client = new OneBotClient(`ws://127.0.0.1:${port}`)
+        client.start()
+        setTimeout(() => void client!.setGroupWholeBan(9, true), 50)
+      })
+    })
+    await expect(gotAction).resolves.toMatchObject({
+      action: "set_group_whole_ban",
+      params: { group_id: "9", enable: true },
+    })
+  })
+
+  it("不在白名单的链接先撤回且不进入消息总线", async () => {
+    const gotAction = new Promise<Record<string, unknown>>((resolve) => {
+      startServer((ws) => {
+        ws.on("message", (raw: Buffer) => {
+          const req = JSON.parse(raw.toString())
+          if (req.action === "delete_msg") {
+            ws.send(JSON.stringify({ echo: req.echo, retcode: 0 }))
+            resolve(req)
+          }
+        })
+        ws.send(
+          JSON.stringify({
+            post_type: "message",
+            message_type: "group",
+            group_id: 1,
+            user_id: 2,
+            message_id: 88,
+            message: "https://not-allowed.example/x",
+          })
+        )
+      }).then((port) => {
+        client = new OneBotClient(
+          `ws://127.0.0.1:${port}`,
+          undefined,
+          undefined,
+          {
+            linkWhitelistEnabled: true,
+            linkWhitelist: ["allowed.example"],
+          }
+        )
+        client.start()
+      })
+    })
+    await expect(gotAction).resolves.toMatchObject({
+      action: "delete_msg",
+      params: { message_id: 88 },
+    })
+  })
+
   it("open 后按 pingIntervalMs 主动发 ws ping", async () => {
     let pings = 0
     const port = await startServer((ws) => {

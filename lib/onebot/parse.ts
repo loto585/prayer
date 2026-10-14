@@ -11,6 +11,7 @@ export interface ParsedMessage {
   messageId: number
   rawText: string
   atList: number[] // 被 @ 的 QQ 列表
+  atAll?: boolean // 含 QQ 原生「@全体成员」段(at qq=all);parse 恒填,可选只为放过测试夹具
   senderRole?: string // owner / admin / member
   imageUrls: string[] // 顶层图片 url(或 file)
   replyId?: string // 引用回复:被引消息 id,待 get_msg 回查
@@ -28,12 +29,53 @@ export interface RawGroupMessageEvent {
   sender?: { role?: string }
 }
 
+export interface RawGroupRequestEvent {
+  post_type?: string
+  request_type?: string
+  sub_type?: string
+  group_id?: number | string
+  user_id?: number | string
+  comment?: string
+  flag?: string
+}
+
+export interface ParsedGroupRequest {
+  groupId: string
+  userId: string
+  comment: string
+  flag: string
+  subType: "add"
+}
+
+export function parseGroupRequest(
+  evt: RawGroupRequestEvent
+): ParsedGroupRequest | null {
+  if (
+    evt?.post_type !== "request" ||
+    evt?.request_type !== "group" ||
+    evt?.sub_type !== "add" ||
+    evt?.group_id == null ||
+    evt?.user_id == null ||
+    !evt.flag
+  ) {
+    return null
+  }
+  return {
+    groupId: String(evt.group_id),
+    userId: String(evt.user_id),
+    comment: typeof evt.comment === "string" ? evt.comment : "",
+    flag: String(evt.flag),
+    subType: "add",
+  }
+}
+
 export function parseGroupMessage(
   evt: RawGroupMessageEvent
 ): ParsedMessage | null {
   if (evt?.post_type !== "message" || evt?.message_type !== "group") return null
 
   const atList: number[] = []
+  let atAll = false
   const imageUrls: string[] = []
   let text = ""
   let replyId: string | undefined
@@ -46,7 +88,9 @@ export function parseGroupMessage(
           text += seg.data?.text ?? ""
           break
         case "at":
-          if (seg.data?.qq) atList.push(Number(seg.data.qq))
+          // qq=all 是「@全体成员」,不是账号;单独打标,别让 Number("all") 把 NaN 混进 atList
+          if (seg.data?.qq === "all") atAll = true
+          else if (seg.data?.qq) atList.push(Number(seg.data.qq))
           break
         case "image": {
           const u = seg.data?.url ?? seg.data?.file
@@ -77,8 +121,10 @@ export function parseGroupMessage(
             return [kv.slice(0, i), kv.slice(i + 1)]
           })
       )
-      if (type === "at" && args.qq) atList.push(Number(args.qq))
-      else if (type === "image") {
+      if (type === "at" && args.qq) {
+        if (args.qq === "all") atAll = true
+        else atList.push(Number(args.qq))
+      } else if (type === "image") {
         const u = args.url ?? args.file
         if (u) imageUrls.push(u)
       } else if (type === "reply" && args.id) replyId = args.id
@@ -93,6 +139,7 @@ export function parseGroupMessage(
     messageId: Number(evt.message_id),
     rawText: text.trim(),
     atList,
+    atAll,
     senderRole: evt.sender?.role,
     imageUrls,
     replyId,

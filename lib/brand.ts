@@ -23,3 +23,14 @@ export function resolveBrand(input: BrandInput = {}): BrandProfile {
   const description = input?.description?.trim() || DEFAULT_BRAND.description
   return { name, description }
 }
+
+/**
+ * 客服身份的固定首句。
+ *
+ * 确定性拦截话术与 system prompt 逐字引用必须完全一致：只要两处各写一份，
+ * 迟早会漂移成「拦截说 A、提示词要求 B」，模型自然选后者。真源放这里，
+ * 两个调用方都从这里取。
+ */
+export function identityLine(brand: BrandProfile): string {
+  return `我是 ${brand.name} 官方客服机器人，${brand.description}。`
+}

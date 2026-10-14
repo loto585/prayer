@@ -263,6 +263,8 @@ describe("topic-poller runScan", () => {
     expect(repo.rankingByWindow(0)).toHaveLength(0) // 事务回滚:第 1 条也没落
     expect(repo.topicCursor("qq", "100")).toBe(0) // 游标未推进
     expect(errs.some((e) => e.scope === "topic")).toBe(true)
+    // 后台旁路失败不向群里发兜底话术
+    expect(errs.every((e) => e.userVisible === false)).toBe(true)
   })
 
   it("命中已有 topicId → 刷新 updated_at,保持热门主题留在前排", async () => {

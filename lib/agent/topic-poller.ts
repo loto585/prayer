@@ -313,6 +313,8 @@ async function scanOnce(d: Resolved): Promise<void> {
         err,
         channel,
         chatId,
+        // 后台旁路无人 @,失败只记日志,不向整群发「系统繁忙」
+        userVisible: false,
       })
     }
   }

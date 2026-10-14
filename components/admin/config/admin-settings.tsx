@@ -49,7 +49,7 @@ export function AdminSettings({
     <ConfigTabContent value="admin" embedded={embedded}>
       <SectionCard
         title="管理面"
-        description="转人工/反思/用量告警抄送与 !reset / !resume 落点。可与生效白名单无关。"
+        description="转人工/反思/用量告警抄送与 /reset、/resume 等管理指令落点。可与生效白名单无关。"
       >
         <FieldGroup>
           <Field>

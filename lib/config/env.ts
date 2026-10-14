@@ -33,9 +33,21 @@ export function seedFromEnv(
   const raw = {
     brandName: env.BRAND_NAME ?? defaults.brandName,
     brandDescription: env.BRAND_DESCRIPTION ?? defaults.brandDescription,
+    replyRules: env.REPLY_RULES ?? defaults.replyRules,
     onebotWsUrl: env.ONEBOT_WS_URL ?? defaults.onebotWsUrl,
     onebotAccessToken: env.ONEBOT_ACCESS_TOKEN ?? defaults.onebotAccessToken,
     botQQ: Number(env.BOT_QQ ?? defaults.botQQ),
+    qqLinkWhitelistEnabled: env.QQ_LINK_WHITELIST_ENABLED === "true",
+    qqLinkWhitelist: parseChatIdList(env.QQ_LINK_WHITELIST),
+    groupRequestEnabled: env.GROUP_REQUEST_ENABLED === "true",
+    groupRequestGroupIds: parseChatIdList(env.GROUP_REQUEST_GROUP_IDS),
+    groupRequestRequireOrder: env.GROUP_REQUEST_REQUIRE_ORDER !== "false",
+    groupRequestAutoApprove: env.GROUP_REQUEST_AUTO_APPROVE !== "false",
+    groupRequestOrderQueryUrl:
+      env.GROUP_REQUEST_ORDER_QUERY_URL ?? defaults.groupRequestOrderQueryUrl,
+    groupRequestOrderTimeoutMs: Number(
+      env.GROUP_REQUEST_ORDER_TIMEOUT_MS ?? defaults.groupRequestOrderTimeoutMs
+    ),
     extraAtQQs: parseQQList(env.EXTRA_AT_QQS),
     adminSurface: adminSurfaceFromEnv(env),
     handoffTimeoutMin: Number(

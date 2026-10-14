@@ -8,6 +8,8 @@ import {
   FieldLabel,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
+import { Switch } from "@/components/ui/switch"
 import { Button } from "@/components/ui/button"
 import {
   Popover,
@@ -32,8 +34,16 @@ import type { ConfigForm } from "./use-config-form"
 const roleLabel = (role: "owner" | "admin") =>
   role === "owner" ? "群主" : "管理"
 
+function parseWhitelistDraft(value: string): string[] {
+  return value
+    .split(/[\s,;]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
 export function QqSettings({
   cfg,
+  setCfg,
   updateField,
   fieldValue,
   groups,
@@ -50,6 +60,7 @@ export function QqSettings({
 }: Pick<
   ConfigForm,
   | "cfg"
+  | "setCfg"
   | "updateField"
   | "fieldValue"
   | "groups"
@@ -75,6 +86,46 @@ export function QqSettings({
               placeholder="ws://127.0.0.1:3001"
               onChange={(e) => updateField("onebotWsUrl", e.target.value)}
             />
+          </Field>
+          <Field>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <FieldLabel htmlFor="qqLinkWhitelistEnabled">
+                  链接白名单
+                </FieldLabel>
+                <FieldDescription>
+                  开启后，群消息中不在下方域名列表的链接（含不带协议头的裸域名）会自动撤回。
+                </FieldDescription>
+              </div>
+              <Switch
+                id="qqLinkWhitelistEnabled"
+                checked={cfg.qqLinkWhitelistEnabled === true}
+                onCheckedChange={(checked) =>
+                  setCfg({ ...cfg, qqLinkWhitelistEnabled: checked })
+                }
+              />
+            </div>
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="qqLinkWhitelist">允许的域名</FieldLabel>
+            <Textarea
+              id="qqLinkWhitelist"
+              rows={3}
+              defaultValue={(cfg.qqLinkWhitelist ?? []).join("\n")}
+              placeholder="example.com\ntrusted.example.cn"
+              onChange={(event) => {
+                const draft = event.target.value
+                setCfg({
+                  ...cfg,
+                  qqLinkWhitelist: parseWhitelistDraft(draft),
+                })
+              }}
+            />
+            <FieldDescription>
+              每行一个域名，也可填写 https://example.com。匹配忽略顶级域：填
+              rightapi.ai 会同时放行 rightapi.com、rightapi.cn
+              等；子域名自动放行。开启白名单但不填写域名时，所有链接都会撤回。
+            </FieldDescription>
           </Field>
           <Field>
             <FieldLabel htmlFor="onebotAccessToken">Access Token</FieldLabel>

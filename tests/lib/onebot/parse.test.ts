@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { parseGroupMessage } from "@/lib/onebot/parse"
+import { parseGroupMessage, parseGroupRequest } from "@/lib/onebot/parse"
 
 describe("parseGroupMessage", () => {
   it("解析数组段格式,提取 @ 列表与纯文本", () => {
@@ -25,6 +25,42 @@ describe("parseGroupMessage", () => {
     })
     expect(m?.replyId).toBeUndefined()
     expect(m?.forwardId).toBeUndefined()
+  })
+
+  it("at qq=all 是「@全体成员」→ atAll=true,不混进 atList", () => {
+    const base = {
+      post_type: "message",
+      message_type: "group",
+      group_id: 100,
+      user_id: 200,
+      message_id: 9,
+    }
+    const arr = parseGroupMessage({
+      ...base,
+      message: [
+        { type: "text", data: { text: "!群发 " } },
+        { type: "at", data: { qq: "all" } },
+        { type: "text", data: { text: " 维护" } },
+      ],
+    })
+    expect(arr?.atAll).toBe(true)
+    expect(arr?.atList).toEqual([])
+    expect(arr?.rawText).toBe("!群发  维护")
+
+    const cq = parseGroupMessage({
+      ...base,
+      message: "!群发 [CQ:at,qq=all] 维护",
+    })
+    expect(cq?.atAll).toBe(true)
+    expect(cq?.atList).toEqual([])
+
+    // 普通 @ 不触发 atAll
+    const normal = parseGroupMessage({
+      ...base,
+      message: [{ type: "at", data: { qq: "555" } }],
+    })
+    expect(normal?.atAll).toBe(false)
+    expect(normal?.atList).toEqual([555])
   })
 
   it("解析 CQ 字符串格式", () => {
@@ -106,5 +142,37 @@ describe("parseGroupMessage", () => {
     expect(m.replyId).toBe("42")
     expect(m.imageUrls).toEqual(["http://b/x.jpg"])
     expect(m.rawText).toBe("帮看看")
+  })
+})
+
+describe("parseGroupRequest", () => {
+  it("只解析群加群申请", () => {
+    expect(
+      parseGroupRequest({
+        post_type: "request",
+        request_type: "group",
+        sub_type: "add",
+        group_id: 1,
+        user_id: 2,
+        comment: "x",
+        flag: "f",
+      })
+    ).toEqual({
+      groupId: "1",
+      userId: "2",
+      comment: "x",
+      flag: "f",
+      subType: "add",
+    })
+    expect(
+      parseGroupRequest({
+        post_type: "request",
+        request_type: "group",
+        sub_type: "invite",
+        group_id: 1,
+        user_id: 2,
+        flag: "f",
+      })
+    ).toBeNull()
   })
 })

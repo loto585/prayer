@@ -250,6 +250,53 @@ describe("Agent.run 超时", () => {
     expect(out.text).toBe("部分答案")
   })
 
+  it("续接会话不存在 → 丢指针重开一次,拿回正常回答与新 session_id", async () => {
+    const seen: QueryArgs[] = []
+    const queryFn = ((args: QueryArgs) => {
+      seen.push(args)
+      // 带 resume 时 CLI 报会话不存在(SDK 把 message 包成 error result 文本)
+      if (args.options?.resume) {
+        return (async function* () {
+          throw new Error(
+            "Claude Code returned an error result: No conversation found with session ID: sid-dead"
+          )
+        })()
+      }
+      return (async function* () {
+        yield { type: "system", subtype: "init", session_id: "sid-fresh" }
+        yield {
+          type: "assistant",
+          message: { content: [{ type: "text", text: "重新开答" }] },
+        }
+        yield { type: "result", subtype: "success" }
+      })()
+    }) as unknown as QueryFn
+
+    const agent = new Agent({ systemPrompt: "s", queryFn })
+    const out = await agent.run("在吗", "sid-dead", ctx)
+    expect(seen).toHaveLength(2)
+    expect(seen[0].options!.resume).toBe("sid-dead")
+    expect(seen[1].options!.resume).toBeUndefined() // 重试不带坏指针
+    expect(out.text).toBe("重新开答")
+    expect(out.sessionId).toBe("sid-fresh")
+    expect(out.staleResume).toBe(true)
+  })
+
+  it("未带 resume 时同样的报错不走重试,维持降级", async () => {
+    let calls = 0
+    const queryFn = (() => {
+      calls++
+      return (async function* () {
+        throw new Error("No conversation found with session ID: x")
+      })()
+    }) as unknown as QueryFn
+    const agent = new Agent({ systemPrompt: "s", queryFn })
+    const out = await agent.run("在吗", undefined, ctx)
+    expect(calls).toBe(1)
+    expect(out.text).toBe(AGENT_FALLBACK_TEXT)
+    expect(out.staleResume).toBeUndefined()
+  })
+
   it("传入 abortController 给 SDK query(超时时可 abort 子进程)", async () => {
     let seen!: QueryArgs
     const spyQuery = async function* (args: QueryArgs) {

@@ -1,0 +1,25 @@
+services:
+  prayer:
+    build:
+      context: .
+    image: prayer:local
+    restart: unless-stopped
+    ports:
+      - "${PRAYER_PORT:-3000}:3000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NODE_ENV: production
+      HOSTNAME: 0.0.0.0
+      PORT: 3000
+      # 数据和 Claude 配置固定在容器卷内，避免宿主机相对路径产生歧义。
+      DB_PATH: /app/data/agent.db
+      CLAUDE_CONFIG_DIR: /app/data/claude-config
+    volumes:
+      # data/ 会自动创建，settings.json 和 SQLite 也能直接在宿主机备份/编辑。
+      - ./data:/app/data
+      - ./docs/kb:/app/docs/kb
+    extra_hosts:
+      # Docker Desktop 中连接宿主机上的 NapCat/OneBot 时可使用 host.docker.internal。
+      - "host.docker.internal:host-gateway"

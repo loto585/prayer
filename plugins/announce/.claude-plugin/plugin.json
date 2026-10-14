@@ -1,0 +1,7 @@
+{
+  "name": "announce",
+  "version": "1.0.0",
+  "description": "群公告写作风格 skill:管理面 /写公告 起草公告时注入,产出团队固定风格的纯文本公告。无 MCP server。",
+  "author": { "name": "prayer" },
+  "skills": "./skills"
+}

@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest"
 import type { AppConfig } from "@/lib/config-store"
 import {
   listEnabledChats,
+  listEnabledQqGroupIds,
   isChatEnabled,
   policyKey,
   getGroupPolicy,
@@ -81,6 +82,21 @@ describe("listEnabledChats", () => {
   it("空配置 → []", () => {
     expect(listEnabledChats(baseCfg())).toEqual([])
     expect(listEnabledChats({})).toEqual([])
+  })
+})
+
+describe("listEnabledQqGroupIds", () => {
+  it("只返回去重后的生效 QQ 群，不包含 TG chat", () => {
+    expect(
+      listEnabledQqGroupIds({
+        enabledChats: [
+          { channel: "qq", chatId: "100" },
+          { channel: "tg", chatId: "-200" },
+          { channel: "qq", chatId: "100" },
+          { channel: "qq", chatId: "300" },
+        ],
+      })
+    ).toEqual(["100", "300"])
   })
 })
 

@@ -101,7 +101,8 @@ export function useConfigForm() {
   }, [loadVersion])
 
   useEffect(() => {
-    fetch("/api/onebot/groups")
+    // 配置页需要看到新加入的群,不能被服务端的 24h 名称缓存遮住。
+    fetch("/api/onebot/groups?refresh=1")
       .then((x) => x.json())
       .then((r) => setGroups(r.ok ? r.data : null))
       .catch(() => setGroups(null))
@@ -267,7 +268,7 @@ export function useConfigForm() {
       cfg.adminSurface.chatId.trim() === id
     ) {
       toast.message("管理面会话不能设为生效会话", {
-        description: "该会话只处理 !reset / !resume 管理命令。",
+        description: "该会话只处理 /reset、/resume 等管理指令。",
       })
       setTgChatDraft("")
       return
@@ -291,7 +292,7 @@ export function useConfigForm() {
     // 管理群只负责管理命令,不能同时当生效会话
     if (adminQqId(cfg.adminSurface) === id) {
       toast.message("管理群不能设为生效群", {
-        description: "该群只处理 !reset / !resume 管理命令,不参与客服问答。",
+        description: "该群只处理 /reset、/resume 等管理指令,不参与客服问答。",
       })
       return
     }

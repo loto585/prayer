@@ -5,6 +5,10 @@ overrides:
   "adm-zip@<0.6.0": "^0.6.0"
   "fast-uri@<3.1.6": "^3.1.6"
   "sharp@<0.35.0": "^0.35.4"
+  # 1.24.x 起官方包移除了 macOS x64 binding；1.23.2 恢复 macOS x64，
+  # 并提供 Windows/macOS/Linux 的 x64 与 arm64 binding（sqlite-vec 仍有
+  # Windows arm64 的上游限制，见 README 的平台说明）。
+  "onnxruntime-node": "1.23.2"
 
 allowBuilds:
   sharp: true

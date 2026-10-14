@@ -13,6 +13,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // macOS 在部分挂载卷上生成的 AppleDouble 元数据，不是源码。
+    "**/._*",
     // 运行时产物,非源码(gitignored):
     "data/**",
     "logs/**",

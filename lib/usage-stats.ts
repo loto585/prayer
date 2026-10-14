@@ -6,7 +6,7 @@
 
 import type { Repo } from "./db/repo"
 
-// 调用点标识:与 5 个 query() 站点一一对应(introspect 不产生模型调用,不计)
+// 调用点标识:与各 query() 站点一一对应(introspect 不产生模型调用,不计)
 export type UsageSite =
   | "agent"
   | "intent"
@@ -15,6 +15,7 @@ export type UsageSite =
   | "compact"
   | "promote"
   | "topic"
+  | "announce"
 
 // 单次调用从 SDK result 消息提取的增量
 export interface UsageDelta {

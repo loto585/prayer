@@ -152,6 +152,10 @@ export function registerOrchestrator(deps: OrchestratorDeps): () => void {
       })
       return
     }
+    // 续接指针已失效(本次已丢指针重开):重试也没拿到新 id 时清掉旧的,
+    // 否则下一句仍拿坏 id 去 resume,每条消息都白跑两次
+    if (result.staleResume && !result.sessionId)
+      store.forgetResume(q.sessionKey)
     if (result.sessionId) store.remember(q.sessionKey, result.sessionId)
     if (result.text) {
       bus.emit("reply.ready", {
@@ -181,6 +185,9 @@ export function registerOrchestrator(deps: OrchestratorDeps): () => void {
           sessionKey: q.sessionKey,
           channel: q.channel,
           chatId: q.chatId,
+          // 用户 @ 了机器人、正在等这条回复,整条链路失败 → 必须给个交代
+          // (丢指针重试后仍失败才会到这里,见 agent.run 的 staleResume)
+          userVisible: true,
         })
         bus.emit("resolution.recorded", {
           kind: "error",

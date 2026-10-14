@@ -129,6 +129,7 @@ export async function enrich(
     messageId: String(parsed.messageId),
     rawText: parsed.rawText,
     atList: parsed.atList.map(String),
+    ...(parsed.atAll ? { atAll: true } : {}),
     senderRole: parsed.senderRole,
     images: images.length ? images : undefined,
     quoted,

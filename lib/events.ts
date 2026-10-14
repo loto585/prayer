@@ -12,6 +12,8 @@ export interface IncomingMessage {
   messageId: string
   rawText: string
   atList: string[]
+  /** 含 QQ 原生「@全体成员」段;管理面群发指令据此开 @全体 */
+  atAll?: boolean
   botMentioned?: boolean
   senderRole?: string // OneBot 群角色:owner / admin / member(反思识别人工回复用)
   images?: ImageInput[] // 顶层 + 引用/转发内嵌的图片(已下载 base64)
@@ -67,7 +69,7 @@ export interface HandoffRequested {
 
 export interface HandoffResumed {
   sessionKey: string
-  // 谁恢复:超时 / 管理群 !resume / 后台会话页
+  // 谁恢复:超时 / 管理群 /resume / 后台会话页
   by?: "timeout" | "admin" | "ui"
 }
 
@@ -90,6 +92,14 @@ export interface ResolutionRecorded {
   detail?: string
 }
 
+export interface GroupRequest {
+  groupId: string
+  userId: string
+  comment: string
+  flag: string
+  subType: "add"
+}
+
 export interface EventMap {
   "message.received": IncomingMessage
   "message.qualified": QualifiedMessage
@@ -99,4 +109,5 @@ export interface EventMap {
   "handoff.requested": HandoffRequested
   "handoff.resumed": HandoffResumed
   "resolution.recorded": ResolutionRecorded
+  "group.requested": GroupRequest
 }

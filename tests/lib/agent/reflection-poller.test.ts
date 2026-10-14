@@ -467,6 +467,7 @@ describe("reflection-poller runScan", () => {
     expect(e.scope).toBe("reflection")
     expect(e.chatId).toBe("100")
     expect(e.channel).toBe("qq")
+    expect(e.userVisible).toBe(false)
     expect(repo.groupReflectCursor("qq", "100")).toBe(0) // 抛错群不推进
     expect(repo.groupReflectCursor("qq", "200")).toBe(NOW - 1000) // 正常群推进
     expect(repo.searchKb(new Float32Array([1, 0, 0]), 10)).toHaveLength(1) // 只群200沉淀

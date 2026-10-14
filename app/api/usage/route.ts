@@ -24,6 +24,7 @@ const SITE_ORDER = [
   "compact",
   "promote",
   "topic",
+  "announce",
 ] as const
 const SITE_LABEL: Record<string, string> = {
   agent: "主客服",
@@ -33,6 +34,7 @@ const SITE_LABEL: Record<string, string> = {
   compact: "反思压缩",
   promote: "升格评审",
   topic: "问题归类",
+  announce: "公告起草",
 }
 
 const ZERO: UsageStat = {

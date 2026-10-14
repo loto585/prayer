@@ -207,6 +207,7 @@ export default function ConfigPage() {
               />
               <QqSettings
                 cfg={cfg}
+                setCfg={setCfg}
                 updateField={updateField}
                 fieldValue={fieldValue}
                 groups={groups}

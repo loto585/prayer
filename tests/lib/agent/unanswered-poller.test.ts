@@ -271,6 +271,7 @@ describe("unanswered-poller runScan", () => {
     expect(e.scope).toBe("proactive")
     expect(e.chatId).toBe("100")
     expect(e.channel).toBe("qq")
+    expect(e.userVisible).toBe(false)
   })
 
   it("isBypassEnabled=false 时跳过该 chat，不调 agent", async () => {

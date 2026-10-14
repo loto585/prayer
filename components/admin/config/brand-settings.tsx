@@ -7,6 +7,7 @@ import {
   FieldLabel,
 } from "@/components/ui/field"
 import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
 import { SectionCard } from "@/components/admin/section-card"
 import { ConfigTabContent } from "./config-tab-content"
 
@@ -47,6 +48,22 @@ export function BrandSettings({
             />
             <FieldDescription>
               用一句话说明客服所服务的产品或业务；具体事实仍以知识库和业务插件为准。
+            </FieldDescription>
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="replyRules">客服回复规则</FieldLabel>
+            <Textarea
+              id="replyRules"
+              value={cfg.replyRules ?? ""}
+              maxLength={4000}
+              rows={7}
+              placeholder={
+                "例如：\n- 自我介绍时称为「某某公司官方客服机器人」。\n- 使用简体中文，语气专业、简洁。\n- 不确定的信息先说明无法核实，不要猜测。\n- 每次回复控制在 300 字以内。"
+              }
+              onChange={(e) => updateField("replyRules", e.target.value)}
+            />
+            <FieldDescription>
+              配置称呼、语气、回复格式和业务表达习惯。系统身份、保密和转人工边界始终由内置规则保护。
             </FieldDescription>
           </Field>
         </FieldGroup>

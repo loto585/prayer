@@ -11,6 +11,8 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["tests/**/*.test.ts"],
+    // macOS 外置卷上的 AppleDouble `._*` 资源文件不是 TypeScript；避免被 include 通配符误识别。
+    exclude: ["tests/**/._*"],
     testTimeout: 20000,
   },
 })

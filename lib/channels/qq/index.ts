@@ -1,6 +1,11 @@
 import type { ActionSend } from "../../events"
 import type { Channel, ChannelCapabilities, ChannelStatus } from "../types"
-import { OneBotClient, type OneBotStats } from "./client"
+import {
+  OneBotClient,
+  type OneBotApiResult,
+  type OneBotKeepaliveOpts,
+  type OneBotStats,
+} from "./client"
 
 const QQ_CAPABILITIES: ChannelCapabilities = {
   canNotifyOwnAdminSurface: true,
@@ -26,9 +31,10 @@ export class QqChannel implements Channel {
   constructor(
     url: string,
     accessToken?: string,
-    onStatus?: (connected: boolean) => void
+    onStatus?: (connected: boolean) => void,
+    opts?: OneBotKeepaliveOpts
   ) {
-    this.client = new OneBotClient(url, accessToken, onStatus)
+    this.client = new OneBotClient(url, accessToken, onStatus, opts)
   }
 
   async start(): Promise<void> {
@@ -76,6 +82,41 @@ export class QqChannel implements Channel {
 
   async listMembers(chatId: string): Promise<unknown[] | undefined> {
     return this.client.getGroupMemberList(Number(chatId))
+  }
+
+  async setGroupAddRequest(
+    flag: string,
+    approve: boolean,
+    reason?: string
+  ): Promise<OneBotApiResult> {
+    return this.client.setGroupAddRequest(flag, approve, reason)
+  }
+
+  async sendGroupMessage(
+    groupId: number,
+    text: string,
+    mentionAll = false
+  ): Promise<OneBotApiResult> {
+    return this.client.sendGroupMessage(groupId, text, mentionAll)
+  }
+
+  async deleteMessage(messageId: number): Promise<OneBotApiResult> {
+    return this.client.deleteMessage(messageId)
+  }
+
+  async setGroupNotice(
+    groupId: number,
+    content: string,
+    pinned = false
+  ): Promise<OneBotApiResult> {
+    return this.client.setGroupNotice(groupId, content, pinned)
+  }
+
+  async setGroupWholeBan(
+    groupId: number,
+    enable: boolean
+  ): Promise<OneBotApiResult> {
+    return this.client.setGroupWholeBan(groupId, enable)
   }
 }
 

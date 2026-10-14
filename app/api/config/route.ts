@@ -25,6 +25,14 @@ export async function PUT(req: NextRequest): Promise<NextResponse> {
   const current = getConfig(r)
   const next = setConfig(r, mergeConfigPatch(current, parsed.data))
 
+  // 身份或回复规则改变后，旧 SDK 会话仍可能携带模型原有的人设（例如 Codex）。
+  // 清理续接指针，让下一条消息以最新客服身份开启上下文；历史 transcript 仍保留。
+  const identityChanged =
+    current.brandName !== next.brandName ||
+    current.brandDescription !== next.brandDescription ||
+    current.replyRules !== next.replyRules
+  if (identityChanged) r.clearAllResumeIds()
+
   const builders = await defaultBuilders()
   await getRuntime().reconfigure(next, builders)
   return NextResponse.json(ok(maskConfig(next)))

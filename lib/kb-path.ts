@@ -1,5 +1,6 @@
 import { resolve, sep } from "node:path"
 
+/** 知识库目录(相对仓库根)。 */
 export const KB_DIR = "docs/kb"
 export const KB_ROOT = resolve(KB_DIR)
 

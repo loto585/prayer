@@ -41,7 +41,12 @@ export const DEFAULT_CHANNEL_FACTORIES: ChannelFactoryEntry[] = [
       return new QqChannel(
         url,
         ctx.cfg.onebotAccessToken || undefined,
-        ctx.onStatus?.qq
+        ctx.onStatus?.qq,
+        {
+          linkWhitelistEnabled: ctx.cfg.qqLinkWhitelistEnabled === true,
+          linkWhitelist: ctx.cfg.qqLinkWhitelist ?? [],
+          botQQ: ctx.cfg.botQQ,
+        }
       )
     },
   },

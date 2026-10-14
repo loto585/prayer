@@ -13,12 +13,17 @@ import { registerReflectionPromoter } from "./agent/reflection-promoter"
 import { registerErrorHandler } from "./agent/error-handler"
 import { registerUnansweredPoller } from "./agent/unanswered-poller"
 import { makeAnswerabilityClassifier } from "./agent/answerability"
+import { makeAnnouncementWriter } from "./agent/announcement-writer"
+import { registerWholeBanExpiry } from "./agent/whole-ban"
 import { registerHandoffHandler } from "./agent/handoff-handler"
 import { registerResolutionRecorder } from "./agent/resolution-recorder"
 import type { GroupPolicy } from "./config-store"
 import type { ChannelId, ChatRef } from "./channels/types"
-import { getGroupPolicy } from "./channels/enabled-chats"
+import { getGroupPolicy, listEnabledQqGroupIds } from "./channels/enabled-chats"
 import type { BrandInput } from "./brand"
+import { registerGroupRequestHandler } from "./qq/group-request-handler"
+import { resolveQqOps } from "./qq/ops"
+import { getRuntime } from "./runtime"
 
 export interface AssembleDeps {
   repo: Repo
@@ -63,6 +68,13 @@ export interface AssembleDeps {
   topicWindowMax?: number
   topicPromptMax?: number
   groupPolicies?: Record<string, GroupPolicy>
+  groupRequestEnabled?: boolean
+  /** @deprecated 加群校验范围由 enabledChats 中的 QQ 群自动派生。 */
+  groupRequestGroupIds?: string[]
+  groupRequestRequireOrder?: boolean
+  groupRequestAutoApprove?: boolean
+  groupRequestOrderQueryUrl?: string
+  groupRequestOrderTimeoutMs?: number
 }
 
 // 会话空闲 TTL 默认值:5 分钟无活动 → 新开对话
@@ -79,6 +91,7 @@ export function assemble(deps: AssembleDeps): () => void {
   )
 
   const enabledChats = deps.enabledChats ?? []
+  const enabledQqGroupIds = listEnabledQqGroupIds({ enabledChats })
   const adminSurface = deps.adminSurface ?? null
 
   const shouldNotifyHandoff = (channel: ChannelId, chatId: string) => {
@@ -94,6 +107,29 @@ export function assemble(deps: AssembleDeps): () => void {
   const proactiveOn = !!deps.proactiveEnabled || anyGroupProactive
 
   const cleanups = [
+    ...(deps.groupRequestEnabled
+      ? [
+          registerGroupRequestHandler({
+            enabledGroupIds: enabledQqGroupIds,
+            requireOrder: deps.groupRequestRequireOrder !== false,
+            autoApprove: deps.groupRequestAutoApprove !== false,
+            orderQueryUrl: deps.groupRequestOrderQueryUrl,
+            orderTimeoutMs: deps.groupRequestOrderTimeoutMs,
+            setGroupAddRequest: async (flag, approve, reason) => {
+              const qq = getRuntime().getChannel("qq") as
+                | {
+                    setGroupAddRequest?: (
+                      f: string,
+                      a: boolean,
+                      r?: string
+                    ) => Promise<unknown>
+                  }
+                | undefined
+              await qq?.setGroupAddRequest?.(flag, approve, reason)
+            },
+          }),
+        ]
+      : []),
     registerResolutionRecorder(repo),
     registerErrorHandler({ supportUrl: deps.supportUrl }),
     registerHandoffHandler({
@@ -111,6 +147,16 @@ export function assemble(deps: AssembleDeps): () => void {
       enabledChats,
       adminSurface,
       supportUrl: deps.supportUrl,
+      brand: deps.brand,
+      // 惰性取通道:registry.register 发生在 assemble 之后,这里不能直接解析
+      qqOps: () => resolveQqOps(getRuntime().getChannel("qq")),
+      // 风格指南在每次起草时现读(SKILL.md 改了不用重启)
+      draftAnnouncement: makeAnnouncementWriter({ brand: deps.brand }),
+    }),
+    // 限时禁言到期解禁:注册时立即扫一次,补进程重启前欠下的解禁
+    registerWholeBanExpiry({
+      repo,
+      qqOps: () => resolveQqOps(getRuntime().getChannel("qq")),
     }),
     registerOrchestrator({
       agent,

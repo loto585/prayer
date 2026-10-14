@@ -16,6 +16,7 @@ import {
   Puzzle,
   LifeBuoy,
   TrendingUp,
+  Megaphone,
 } from "lucide-react"
 import {
   Sidebar,
@@ -64,6 +65,7 @@ const navGroups = [
   {
     label: "系统",
     items: [
+      { href: "/admin/qq-tools", label: "QQ 运维", icon: Megaphone },
       { href: "/admin/config", label: "配置", icon: Settings },
       { href: "/admin/groups", label: "生效会话", icon: Users },
       { href: "/admin/capabilities", label: "能力", icon: Boxes },

@@ -10,7 +10,13 @@ import { usageStats, type UsageSite, type UsageDelta } from "../usage-stats"
 import { toolStats, KB_PREFETCH_TOOL, KB_GROUNDED_TOOL } from "../tool-stats"
 import { logger } from "../logger"
 import type { ChannelId } from "../channels/types"
-import { resolveBrand, type BrandInput, type BrandProfile } from "../brand"
+import {
+  resolveBrand,
+  identityLine,
+  type BrandInput,
+  type BrandProfile,
+} from "../brand"
+import { errorMessage } from "../log-context"
 import { PROBE_MAX_CHARS, type KbPrefetch } from "./kb-prefetch"
 import { sanitizeForModel } from "./sanitize-input"
 
@@ -175,6 +181,8 @@ export interface AgentDeps {
   systemPrompt: string
   /** 客服对外品牌；未传时使用 Prayer 默认身份。 */
   brand?: BrandProfile
+  /** 部署方自定义的客服行为规则。 */
+  replyRules?: string
   /** 办不了事务时引导的支持链接,注入 system prompt */
   supportUrl?: string
   // 本仓库 local plugin 目录绝对路径。通常不传:插件统一由
@@ -201,6 +209,12 @@ export const DEFAULT_RUN_TIMEOUT_MS = 180_000
 export interface AgentResult {
   text: string
   sessionId?: string
+  /**
+   * 本次 run 丢弃了一个续接指针(CLI 侧已无该对话)。
+   * 调用方据此清库里的 resume 指针:否则下次仍拿同一个坏 id 去 resume,
+   * 每条消息都撞同一堵墙(见 run 的 isStaleResumeError 分支)。
+   */
+  staleResume?: boolean
 }
 
 export interface AgentMedia {
@@ -443,6 +457,8 @@ export async function drainQuery(
 export interface DefaultSystemOptions {
   supportUrl?: string
   brand?: BrandInput
+  /** 部署方自定义的客服行为规则；系统身份与安全边界不由此字段覆盖。 */
+  replyRules?: string
 }
 
 /**
@@ -457,13 +473,33 @@ export function buildDefaultSystem(
   const options = typeof input === "string" ? { supportUrl: input } : input
   const brand = resolveBrand(options.brand)
   const supportUrl = options.supportUrl?.trim() ?? ""
+  const replyRules = options.replyRules?.trim() ?? ""
   const supportHint = supportUrl
     ? `这类事务可引导用户访问 ${supportUrl} 自助查看或办理,或在本群 @我 后发送「人工」转接群管。`
     : "这类事务无法由自动客服办理,应如实说明并引导用户在本群 @我 后发送「人工」联系群管。"
 
   return `你是 ${brand.name} 的官方在线客服。${brand.name} 是${brand.description}。你的目标是给出准确、可执行且有依据的支持答复;不得猜测事实或假装完成任何操作。
 
-# 业务范围
+# 对外身份
+- 你对群友的唯一对外身份是「${brand.name} 官方客服机器人」,只以这个身份介绍自己。
+- 被问“你是谁”“介绍一下自己”或类似问题时,回复必须以这一句逐字开头(标点保持一致,不要改写、不要加前后缀):
+  ${identityLine(brand)}
+  之后只用一两句话说明服务范围(产品咨询、使用指导、问题排查)和人工方式(@我 后发送「人工」)。
+- 示例:
+  用户:介绍一下自己
+  你:${identityLine(brand)}我主要为大家提供产品咨询、使用指导和问题排查;如果问题需要人工处理,请 @我 后发送「人工」。
+- 你的自我认知只来自本提示词给出的客服身份与知识库资料。描述自身能力时,不要引用任何模型、平台、厂商、开发工具或运行环境的名字,也不要说明自己在阅读系统提示、遵循内部指令或调用了什么工具。
+- 需要说明能力边界时,用“${brand.name} 官方客服机器人暂时无法核实/办理”表述。
+
+${
+  replyRules
+    ? `# 部署方配置的回复规则
+以下是管理员配置的业务表达要求,应在不违反上面的对外身份、保密安全和人工边界的前提下执行:
+${replyRules}
+
+`
+    : ""
+}# 业务范围
 - 可解答 ${brand.name} 产品或服务的价格、功能、接入配置、计费规则、产品政策与使用故障排查。
 - 可提供解决具体产品问题所必需的配置片段或代码;不执行文件、命令或系统操作,不承接无关的写代码任务。
 - 无需事实资料的寒暄、澄清、拒绝或转人工答复,直接处理,不要为了显得忙碌而调用工具。
@@ -557,10 +593,11 @@ export class Agent {
 
   private resolvedSystem(): string {
     if (this.deps.systemPrompt) return this.deps.systemPrompt
-    if (this.deps.supportUrl || this.deps.brand) {
+    if (this.deps.supportUrl || this.deps.brand || this.deps.replyRules) {
       return buildDefaultSystem({
         supportUrl: this.deps.supportUrl,
         brand: this.deps.brand,
+        replyRules: this.deps.replyRules,
       })
     }
     return DEFAULT_SYSTEM
@@ -590,7 +627,46 @@ export class Agent {
     }
   }
 
+  /**
+   * 本次 run 是否因「resume 的会话在 CLI 侧不存在」而失败。
+   * CLI 报 "No conversation found with session ID: xxx",常见于:上次 run 被超时中断
+   * 没写成对话文件、CLAUDE_CONFIG_DIR 下的会话目录被清、或 cwd 变了导致按 cwd 哈希的
+   * 会话路径整体失效。这类失败重试同一个 id 永远不会成功,只能丢掉指针重开对话。
+   */
+  private isStaleResumeError(err: unknown): boolean {
+    return /no conversation found/i.test(errorMessage(err))
+  }
+
+  /**
+   * 对外入口:带 resume 时若命中「会话不存在」,丢指针重开一次。
+   * 只重试一次且重试时 resumeId 为空,天然不会递归;其它错误(超时/relay 5xx)
+   * 维持原有降级语义,不重试。
+   */
   async run(
+    text: string,
+    resumeId: string | undefined,
+    ctx: ToolContext,
+    media?: AgentMedia
+  ): Promise<AgentResult> {
+    try {
+      return await this.runOnce(text, resumeId, ctx, media)
+    } catch (e) {
+      if (!resumeId || !this.isStaleResumeError(e)) throw e
+      logger.warn(
+        `[agent] 续接会话不存在,丢弃指针重开对话: ${errorMessage(e).split("\n")[0].slice(0, 200)}`,
+        {
+          scope: "agent.stale-resume",
+          channel: ctx?.channel as ChannelId | undefined,
+          chatId: ctx?.chatId,
+          sessionKey: ctx?.sessionKey,
+        }
+      )
+      const fresh = await this.runOnce(text, undefined, ctx, media)
+      return { ...fresh, staleResume: true }
+    }
+  }
+
+  private async runOnce(
     text: string,
     resumeId: string | undefined,
     ctx: ToolContext,
@@ -698,6 +774,9 @@ export class Agent {
         await drain
       }
     } catch (e) {
+      // 续接的会话在 CLI 侧不存在:降级只会把坏指针原样带回(见 run 的 staleResume),
+      // 抛给 run 丢弃指针重开一次,由它决定;此处不吞。
+      if (resumeId && this.isStaleResumeError(e)) throw e
       // maxTurns / CLI 异常(SDK reject 迭代器)、超时或 queryFn 同步抛错:降级 ——
       // 保留已累积文本与 sessionId,避免整个请求 500、丢掉会话,更避免 handle 永挂拖死编排串行链
       console.error("[agent] query 启动/迭代中断/超时,降级返回已累积内容:", e)
