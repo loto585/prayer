@@ -1,4 +1,4 @@
-import { Geist, JetBrains_Mono } from "next/font/google"
+import localFont from "next/font/local"
 
 import "./globals.css"
 import { ThemeProvider } from "@/components/theme-provider"
@@ -16,13 +16,22 @@ export const metadata: Metadata = {
   description: DEFAULT_BRAND.description,
 }
 
-const fontSans = Geist({
-  subsets: ["latin"],
+// 字体文件随仓库分发(next/font/local),不用 next/font/google:
+// 构建期下载只走本机,服务器连不上 fonts.googleapis.com,构建会直接失败。
+// 两个文件都是从 Google Fonts 取的 latin 子集可变字体,字重覆盖与原来一致。
+const fontSans = localFont({
+  src: "./fonts/geist-latin.woff2",
+  weight: "100 900",
+  style: "normal",
+  display: "swap",
   variable: "--font-sans",
 })
 
-const jetbrainsMono = JetBrains_Mono({
-  subsets: ["latin"],
+const jetbrainsMono = localFont({
+  src: "./fonts/jetbrains-mono-latin.woff2",
+  weight: "100 800",
+  style: "normal",
+  display: "swap",
   variable: "--font-mono",
 })
 
