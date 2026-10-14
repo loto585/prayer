@@ -130,6 +130,28 @@ describe("parseAdminCommand", () => {
     })
   })
 
+  it("群发:带图时正文可空(纯图群发);不带图仍回 usage", () => {
+    expect(parseAdminCommand("/群发", { hasImages: true })).toEqual({
+      kind: "broadcast",
+      text: "",
+      mentionAll: false,
+    })
+    expect(parseAdminCommand("/群发 -all", { hasImages: true })).toEqual({
+      kind: "broadcast",
+      text: "",
+      mentionAll: true,
+    })
+    expect(parseAdminCommand("/群发 -all")).toEqual({
+      kind: "usage",
+      command: "群发",
+    })
+    // 旗标写错时即便带图也不猜
+    expect(parseAdminCommand("/群发 -al", { hasImages: true })).toEqual({
+      kind: "usage",
+      command: "群发",
+    })
+  })
+
   it("群发:只有旗标没正文 → usage", () => {
     expect(parseAdminCommand("/群发")).toEqual({
       kind: "usage",

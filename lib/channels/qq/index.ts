@@ -1,4 +1,4 @@
-import type { ActionSend } from "../../events"
+import type { ActionSend, ImageInput } from "../../events"
 import type { Channel, ChannelCapabilities, ChannelStatus } from "../types"
 import {
   OneBotClient,
@@ -95,9 +95,10 @@ export class QqChannel implements Channel {
   async sendGroupMessage(
     groupId: number,
     text: string,
-    mentionAll = false
+    mentionAll = false,
+    images?: ImageInput[]
   ): Promise<OneBotApiResult> {
-    return this.client.sendGroupMessage(groupId, text, mentionAll)
+    return this.client.sendGroupMessage(groupId, text, mentionAll, images)
   }
 
   async deleteMessage(messageId: number): Promise<OneBotApiResult> {

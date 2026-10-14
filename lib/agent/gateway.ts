@@ -1,6 +1,6 @@
 import { bus } from "../bus"
 import type { Repo } from "../db/repo"
-import type { IncomingMessage } from "../events"
+import type { ImageInput, IncomingMessage } from "../events"
 import type { ChannelId } from "../channels/types"
 import { resolveBrand, identityLine, type BrandInput } from "../brand"
 import { makeDedupeKey, makeSessionKey } from "../channels/ids"
@@ -88,7 +88,7 @@ function adminHelpText(): string {
     "本群仅处理管理命令(旗标紧跟指令名):",
     "`/reset <sessionKey>` 重置该会话上下文",
     "`/resume <sessionKey>` 恢复自动答",
-    "`/群发 [-all] [-t <时长>] <内容>` 发到全部生效 QQ 群;-all 同时 @全体成员",
+    "`/群发 [-all] [-t <时长>] <内容>` 发到全部生效 QQ 群,可附图;-all 同时 @全体成员",
     "`/公告 [-pin] [-t <时长>] <内容>` 发布群公告;-pin 置顶",
     "`/写公告 <要点>` 让机器人按团队风格起草公告",
     "`/发布 [-pin] [-t <时长>]` 发布最近一份草稿",
@@ -208,14 +208,18 @@ export function registerGateway(deps: GatewayDeps): () => void {
 
   // 管理面群发/公告/禁言:逐群执行后把结果回执到管理群。失败不抛,回执里逐群列原因。
   // 带 -t 时先限时禁言(必须 await,否则消息可能先于禁言到达)再执行主操作,并登记到期解禁。
+  // images 只对群发有意义:取自指令消息本身(含引用消息里的图),已在入站富化时下载好。
   const runGroupOp = async (
     cmd: Extract<AdminCommand, { kind: "broadcast" | "notice" | "mute" }>,
     admin: ChatRef,
-    replyToId: string
+    replyToId: string,
+    images: ImageInput[] = []
   ): Promise<void> => {
     const label =
       cmd.kind === "broadcast"
-        ? "群发"
+        ? images.length
+          ? `群发(含 ${images.length} 张图)`
+          : "群发"
         : cmd.kind === "notice"
           ? "公告"
           : cmd.enable
@@ -263,7 +267,13 @@ export function registerGateway(deps: GatewayDeps): () => void {
 
       const summary =
         cmd.kind === "broadcast"
-          ? await broadcastMessage(ops, targets, cmd.text, cmd.mentionAll)
+          ? await broadcastMessage(
+              ops,
+              targets,
+              cmd.text,
+              cmd.mentionAll,
+              images
+            )
           : cmd.kind === "notice"
             ? await publishNotice(ops, targets, cmd.content, cmd.pinned)
             : (banSummary ?? (await setWholeBan(ops, targets, cmd.enable)))
@@ -302,7 +312,10 @@ export function registerGateway(deps: GatewayDeps): () => void {
     // 管理面只负责管理:只吃 / 指令,绝不进客服流程
     // （不建 session、不答话、不转人工、不吃「重置/人工/帮助」关键词）
     if (onAdmin && adminSurface) {
-      const cmd = parseAdminCommand(msg.rawText, { atAll: msg.atAll })
+      const cmd = parseAdminCommand(msg.rawText, {
+        atAll: msg.atAll,
+        hasImages: !!msg.images?.length,
+      })
       if (!cmd) return
       const dedupeKey = makeDedupeKey(channel, chatId, messageId)
       switch (cmd.kind) {
@@ -321,9 +334,12 @@ export function registerGateway(deps: GatewayDeps): () => void {
           })
           return
         case "broadcast":
+          // 有副作用且不幂等:WS 重连重放同一条指令绝不能二次执行
+          if (repo.seenMessage(dedupeKey)) return
+          void runGroupOp(cmd, adminSurface, messageId, msg.images)
+          return
         case "notice":
         case "mute":
-          // 有副作用且不幂等:WS 重连重放同一条指令绝不能二次执行
           if (repo.seenMessage(dedupeKey)) return
           void runGroupOp(cmd, adminSurface, messageId)
           return

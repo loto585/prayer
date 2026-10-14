@@ -15,6 +15,7 @@ import type {
   ErrorOccurred,
   HandoffRequested,
   HandoffResumed,
+  ImageInput,
   IncomingMessage,
   QualifiedMessage,
 } from "@/lib/events"
@@ -123,7 +124,13 @@ describe("管理面群发/公告指令", () => {
     return {
       calls,
       sendGroupMessage: vi.fn(
-        async (groupId: number, text: string, mentionAll = false): Res => {
+        async (
+          groupId: number,
+          text: string,
+          mentionAll = false,
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars
+          _images?: ImageInput[]
+        ): Res => {
           calls.push({ op: "msg", groupId, text, flag: mentionAll })
           return failIds.includes(groupId)
             ? { ok: false, message: "无权限" }
@@ -257,6 +264,52 @@ describe("管理面群发/公告指令", () => {
     await new Promise((r) => setTimeout(r, 30))
     // 2 个目标群 × 1 次 = 2;重放若未去重会是 4
     expect(ops.sendGroupMessage).toHaveBeenCalledTimes(2)
+  })
+
+  it("/群发 带图 → 图随文字发到每个群,回执注明张数", async () => {
+    const ops = fakeOps()
+    setup(ops)
+    const img: ImageInput = { data: "AAAA", mediaType: "image/png" }
+    const p = nextSend()
+    bus.emit(
+      "message.received",
+      adminMsg("/群发 -all 新活动", "img1", { images: [img] })
+    )
+    const a = await p
+    expect(ops.sendGroupMessage.mock.calls).toEqual([
+      [1, "新活动", true, [img]],
+      [2, "新活动", true, [img]],
+    ])
+    expect(a.text).toContain("群发(含 1 张图)完成:成功 2 / 共 2")
+  })
+
+  it("/群发 只带图不写字 → 纯图群发", async () => {
+    const ops = fakeOps()
+    setup(ops)
+    const imgs: ImageInput[] = [
+      { data: "AAAA", mediaType: "image/png" },
+      { data: "BBBB", mediaType: "image/jpeg" },
+    ]
+    const p = nextSend()
+    bus.emit("message.received", adminMsg("/群发", "img2", { images: imgs }))
+    const a = await p
+    expect(ops.sendGroupMessage.mock.calls[0]).toEqual([1, "", false, imgs])
+    expect(a.text).toContain("群发(含 2 张图)完成")
+  })
+
+  it("/公告 带图 → 图不进公告(公告接口只收文本)", async () => {
+    const ops = fakeOps()
+    setup(ops)
+    const p = nextSend()
+    bus.emit(
+      "message.received",
+      adminMsg("/公告 文本公告", "img3", {
+        images: [{ data: "AAAA", mediaType: "image/png" }],
+      })
+    )
+    await p
+    expect(ops.setGroupNotice).toHaveBeenCalledTimes(2)
+    expect(ops.sendGroupMessage).not.toHaveBeenCalled()
   })
 
   it("只有指令名没正文 → 回该指令用法,不发送", async () => {

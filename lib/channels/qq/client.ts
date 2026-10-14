@@ -1,6 +1,6 @@
 import WebSocket from "ws"
 import { bus } from "../../bus"
-import type { ActionSend } from "../../events"
+import type { ActionSend, ImageInput } from "../../events"
 import { logger } from "../../logger"
 import { enrich } from "../../onebot/enrich"
 import {
@@ -38,6 +38,9 @@ export const DEFAULT_LIVENESS_MS = 75_000
 export const MIN_LIVENESS_MS = 15_000
 /** 容忍连丢 2 个心跳 */
 export const HEARTBEAT_FACTOR = 3
+
+/** 带图群发的回执等待:NapCat 先上传图片再回执,多图时远超普通 8s */
+export const IMAGE_SEND_TIMEOUT_MS = 30_000
 
 /** 保活时间参数；仅单测覆盖，生产走常量 */
 export interface OneBotKeepaliveOpts {
@@ -349,15 +352,33 @@ export class OneBotClient {
   sendGroupMessage(
     groupId: number,
     text: string,
-    mentionAll = false
+    mentionAll = false,
+    images: ImageInput[] = []
   ): Promise<OneBotApiResult> {
-    const message = mentionAll
-      ? [
-          { type: "at", data: { qq: "all" } },
-          { type: "text", data: { text: ` ${text}` } },
-        ]
-      : text
-    return this.callResult("send_group_msg", { group_id: groupId, message })
+    if (!mentionAll && images.length === 0) {
+      return this.callResult("send_group_msg", {
+        group_id: groupId,
+        message: text,
+      })
+    }
+    const message: Array<{ type: string; data: Record<string, string> }> = []
+    if (mentionAll) message.push({ type: "at", data: { qq: "all" } })
+    if (text) {
+      message.push({
+        type: "text",
+        data: { text: mentionAll ? ` ${text}` : text },
+      })
+    }
+    // 图片走 base64:// 直传,不依赖原图 url(QQ 多媒体链接带 rkey 会过期)
+    for (const img of images) {
+      message.push({ type: "image", data: { file: `base64://${img.data}` } })
+    }
+    // 带图时 NapCat 要先上传再回执,默认 8s 容易误判失败(实际已发出)
+    return this.callResult(
+      "send_group_msg",
+      { group_id: groupId, message },
+      images.length ? IMAGE_SEND_TIMEOUT_MS : undefined
+    )
   }
 
   deleteMessage(messageId: number): Promise<OneBotApiResult> {

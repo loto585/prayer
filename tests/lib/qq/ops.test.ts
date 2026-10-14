@@ -82,6 +82,21 @@ describe("broadcastMessage / publishNotice", () => {
     })
   })
 
+  it("图片透传到每个群", async () => {
+    const send = vi.fn(async () => ({ ok: true, retcode: 0 }))
+    const ops: QqOps = {
+      sendGroupMessage: send,
+      setGroupNotice: vi.fn(),
+      setGroupWholeBan: vi.fn(),
+    }
+    const img = { data: "AAAA", mediaType: "image/png" }
+    await broadcastMessage(ops, [1, 2], "", false, [img])
+    expect(send.mock.calls).toEqual([
+      [1, "", false, [img]],
+      [2, "", false, [img]],
+    ])
+  })
+
   it("单群失败/抛错都收进结果,不中断后续群", async () => {
     const { ops } = fakeOps([2], [3])
     const s = await broadcastMessage(ops, [1, 2, 3, 4], "x")

@@ -1,5 +1,6 @@
 import type { OneBotApiResult } from "../channels/qq/client"
 import type { ChatRef } from "../channels/types"
+import type { ImageInput } from "../events"
 
 /**
  * 群发消息 / 群公告所需的最小 QQ 通道能力。
@@ -7,10 +8,12 @@ import type { ChatRef } from "../channels/types"
  * 避免两处各写一份发送循环后行为漂移。
  */
 export interface QqOps {
+  /** images 跟在文字后面发;text 可为空(纯图) */
   sendGroupMessage(
     groupId: number,
     text: string,
-    mentionAll?: boolean
+    mentionAll?: boolean,
+    images?: ImageInput[]
   ): Promise<OneBotApiResult>
   setGroupNotice(
     groupId: number,
@@ -112,11 +115,12 @@ export function broadcastMessage(
   ops: QqOps,
   groupIds: number[],
   text: string,
-  mentionAll = false
+  mentionAll = false,
+  images: ImageInput[] = []
 ): Promise<GroupOpSummary> {
   return runPerGroup(
     groupIds,
-    (gid) => ops.sendGroupMessage(gid, text, mentionAll),
+    (gid) => ops.sendGroupMessage(gid, text, mentionAll, images),
     "发送失败"
   )
 }

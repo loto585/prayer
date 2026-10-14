@@ -4,7 +4,7 @@
  * 语法:`/指令 [-旗标…] <正文>`。旗标紧跟指令名、全部英文;正文可多行:
  *   /reset <sessionKey>
  *   /resume <sessionKey>
- *   /群发 [-all] [-t <时长>] <内容>        -all = @全体;-t = 先限时禁言再发
+ *   /群发 [-all] [-t <时长>] <内容>        -all = @全体;-t = 先限时禁言再发;同条消息带的图一并群发
  *   /公告 [-pin] [-t <时长>] <内容>        -pin = 置顶(缺省不置顶)
  *   /写公告 <要点>                          让模型按风格起草,回草稿到管理群
  *   /发布 [-pin] [-t <时长>]                发布最近一份草稿
@@ -13,6 +13,7 @@
  *
  * 前缀同时接受半角 `/` 与全角 `／`。旧的 `!` 前缀按未知指令处理(回总用法),便于迁移。
  * 用 QQ 自带的「@全体成员」等价于 -all:解析层把 at=all 段标成 atAll 传进来。
+ * 图片不进解析结果(本模块只看文本),由 gateway 从入站消息取;解析层只需知道「带没带图」。
  */
 export type UsageCommand = "群发" | "公告" | "写公告" | "发布" | "禁言"
 
@@ -27,6 +28,7 @@ export interface TargetOptions {
 export type AdminCommand =
   | { kind: "reset"; sessionKey: string }
   | { kind: "resume"; sessionKey: string }
+  /** text 可为空:此时消息必带图(纯图群发) */
   | ({ kind: "broadcast"; text: string; mentionAll: boolean } & TargetOptions)
   | ({ kind: "notice"; content: string; pinned: boolean } & TargetOptions)
   | { kind: "draft"; brief: string }
@@ -40,6 +42,8 @@ export type AdminCommand =
 export interface ParseAdminCommandOptions {
   /** 消息里带 QQ 原生「@全体成员」段 */
   atAll?: boolean
+  /** 消息带图;/群发 据此允许正文为空(纯图) */
+  hasImages?: boolean
 }
 
 /** -t 取值范围:太短没意义,太长既无意义又逼近 Node setTimeout 上限 */
@@ -79,7 +83,7 @@ export function formatDuration(ms: number): string {
 }
 
 export const BROADCAST_USAGE =
-  "用法:`/群发 [-all] [-t <时长>] <内容>` 发到全部生效群;-all 同时 @全体成员;-t 先限时禁言再发(如 -t 10m),到期自动解除。"
+  "用法:`/群发 [-all] [-t <时长>] <内容>` 发到全部生效群;同一条消息里附带的图片会一并发出(可只发图);-all 同时 @全体成员;-t 先限时禁言再发(如 -t 10m),到期自动解除。"
 export const NOTICE_USAGE =
   "用法:`/公告 [-pin] [-t <时长>] <内容>` 在全部生效群发布群公告;-pin 置顶;-t 先限时禁言再发。"
 export const DRAFT_USAGE =
@@ -180,7 +184,7 @@ export function parseAdminCommand(
       valued: ["-t", "-g"],
     })
     const to = p ? targetOptions(p.flags) : null
-    if (!p || !to || !p.body) return usage("群发")
+    if (!p || !to || (!p.body && !opts.hasImages)) return usage("群发")
     return {
       kind: "broadcast",
       text: p.body,

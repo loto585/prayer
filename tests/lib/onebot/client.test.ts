@@ -256,6 +256,45 @@ describe("OneBotClient", () => {
     })
   })
 
+  it("群发带图:文字段后接 base64 图片段;纯图不带空文字段", async () => {
+    const reqs: Array<Record<string, unknown>> = []
+    const gotTwo = new Promise<void>((resolve) => {
+      startServer((ws) => {
+        ws.on("message", (raw: Buffer) => {
+          const req = JSON.parse(raw.toString())
+          if (req.action === "send_group_msg") {
+            ws.send(JSON.stringify({ echo: req.echo, retcode: 0 }))
+            reqs.push(req)
+            if (reqs.length === 2) resolve()
+          }
+        })
+      }).then((port) => {
+        client = new OneBotClient(`ws://127.0.0.1:${port}`)
+        client.start()
+        const img = { data: "AAAA", mediaType: "image/png" }
+        setTimeout(async () => {
+          await client!.sendGroupMessage(9, "看图", false, [img])
+          await client!.sendGroupMessage(9, "", true, [img])
+        }, 50)
+      })
+    })
+    await gotTwo
+    expect(reqs[0]!.params).toEqual({
+      group_id: 9,
+      message: [
+        { type: "text", data: { text: "看图" } },
+        { type: "image", data: { file: "base64://AAAA" } },
+      ],
+    })
+    expect(reqs[1]!.params).toEqual({
+      group_id: 9,
+      message: [
+        { type: "at", data: { qq: "all" } },
+        { type: "image", data: { file: "base64://AAAA" } },
+      ],
+    })
+  })
+
   it("公告 pinned=true → _send_group_notice 带 pinned=1", async () => {
     const gotAction = new Promise<Record<string, unknown>>((resolve) => {
       startServer((ws) => {
