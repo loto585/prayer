@@ -4,6 +4,7 @@ import {
   cleanDraft,
   loadStyleGuide,
   makeAnnouncementWriter,
+  normalizeSignature,
   stripFrontmatter,
 } from "@/lib/agent/announcement-writer"
 
@@ -69,7 +70,7 @@ describe("buildAnnouncementSystem", () => {
     expect(s).toContain("RightCode")
     expect(s).toContain("RightCode团队")
     expect(s).toContain("2026 年 10 月 6 日")
-    expect(s).toContain("2026 年 10 月")
+    expect(s).toContain("署名分两行")
     expect(s).toContain("GUIDE_BODY")
   })
 
@@ -91,6 +92,35 @@ describe("cleanDraft", () => {
   })
 })
 
+describe("normalizeSignature", () => {
+  it("同一行的署名拆成两行,日期改成当天且精确到日", () => {
+    expect(
+      normalizeSignature("【公告】x\nRightCode团队 2026 年 10 月", FIXED)
+    ).toBe("【公告】x\nRightCode团队\n2026 年 10 月 6 日")
+    expect(
+      normalizeSignature("【公告】x\nRightCode团队 2026年10月5日", FIXED)
+    ).toBe("【公告】x\nRightCode团队\n2026 年 10 月 6 日")
+  })
+  it("已分两行但只到月 → 补到日", () => {
+    expect(
+      normalizeSignature("【公告】x\nRightCode团队\n2026 年 10 月", FIXED)
+    ).toBe("【公告】x\nRightCode团队\n2026 年 10 月 6 日")
+  })
+  it("格式已正确保持不变;没有署名(优惠码)原样返回", () => {
+    const ok = "【公告】x\nRightCode团队\n2026 年 10 月 6 日"
+    expect(normalizeSignature(ok, FIXED)).toBe(ok)
+    const code = "【神秘小代码】\nX 九折\n备注:中秋快乐"
+    expect(normalizeSignature(code, FIXED)).toBe(code)
+  })
+  it("正文里的日期不动,只改末尾署名", () => {
+    const d =
+      "【重要公告】x\n2026 年 10 月 20 日 12:00 起生效\nRightCode团队 2026 年 10 月"
+    expect(normalizeSignature(d, FIXED)).toBe(
+      "【重要公告】x\n2026 年 10 月 20 日 12:00 起生效\nRightCode团队\n2026 年 10 月 6 日"
+    )
+  })
+})
+
 describe("makeAnnouncementWriter", () => {
   it("把模型输出清理后返回", async () => {
     const w = makeAnnouncementWriter({
@@ -101,8 +131,9 @@ describe("makeAnnouncementWriter", () => {
         "```\n【维护通知】\n修好了\nRightCode团队 2026 年 10 月\n```"
       ) as never,
     })
+    // 旧格式署名(同一行、只到月)被校正成两行、精确到日
     expect(await w("修好了")).toBe(
-      "【维护通知】\n修好了\nRightCode团队 2026 年 10 月"
+      "【维护通知】\n修好了\nRightCode团队\n2026 年 10 月 6 日"
     )
   })
 
