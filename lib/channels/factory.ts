@@ -45,6 +45,11 @@ export const DEFAULT_CHANNEL_FACTORIES: ChannelFactoryEntry[] = [
         {
           linkWhitelistEnabled: ctx.cfg.qqLinkWhitelistEnabled === true,
           linkWhitelist: ctx.cfg.qqLinkWhitelist ?? [],
+          // 管理群不撤回链接:否则 `/群发 详情见 https://…` 这类指令会先被撤回、根本执行不到
+          linkGuardExemptGroupIds:
+            ctx.cfg.adminSurface?.channel === "qq"
+              ? [Number(ctx.cfg.adminSurface.chatId)]
+              : [],
           botQQ: ctx.cfg.botQQ,
         }
       )

@@ -50,6 +50,8 @@ export interface OneBotKeepaliveOpts {
   heartbeatFactor?: number
   linkWhitelistEnabled?: boolean
   linkWhitelist?: string[]
+  /** 不做链接撤回的群(管理群):管理员在那里贴链接是正常工作 */
+  linkGuardExemptGroupIds?: number[]
   botQQ?: number
 }
 
@@ -93,6 +95,7 @@ export class OneBotClient {
   private readonly heartbeatFactor: number
   private readonly linkWhitelistEnabled: boolean
   private readonly linkWhitelist: string[]
+  private readonly linkGuardExempt: Set<number>
   private readonly botQQ?: number
 
   constructor(
@@ -107,6 +110,7 @@ export class OneBotClient {
     this.heartbeatFactor = opts?.heartbeatFactor ?? HEARTBEAT_FACTOR
     this.linkWhitelistEnabled = opts?.linkWhitelistEnabled === true
     this.linkWhitelist = opts?.linkWhitelist ?? []
+    this.linkGuardExempt = new Set(opts?.linkGuardExemptGroupIds ?? [])
     this.botQQ = opts?.botQQ
   }
 
@@ -234,6 +238,7 @@ export class OneBotClient {
       if (!parsed) return
       if (
         this.linkWhitelistEnabled &&
+        !this.linkGuardExempt.has(parsed.groupId) &&
         (this.botQQ == null || this.botQQ <= 0 || parsed.userId !== this.botQQ)
       ) {
         const blocked = findBlockedLink(parsed.rawText, this.linkWhitelist)

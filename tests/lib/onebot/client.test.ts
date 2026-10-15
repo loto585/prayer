@@ -399,6 +399,44 @@ describe("OneBotClient", () => {
     })
   })
 
+  it("免检群(管理群)里的链接不撤回,照常进入消息总线", async () => {
+    const actions: string[] = []
+    const received = new Promise<IncomingMessage>((res) =>
+      bus.once("message.received", res)
+    )
+    startServer((ws) => {
+      ws.on("message", (raw: Buffer) => {
+        actions.push(JSON.parse(raw.toString()).action)
+      })
+      ws.send(
+        JSON.stringify({
+          post_type: "message",
+          message_type: "group",
+          group_id: 999,
+          user_id: 2,
+          message_id: 89,
+          message: "/群发 详情见 https://not-allowed.example/x",
+        })
+      )
+    }).then((port) => {
+      client = new OneBotClient(
+        `ws://127.0.0.1:${port}`,
+        undefined,
+        undefined,
+        {
+          linkWhitelistEnabled: true,
+          linkWhitelist: ["allowed.example"],
+          linkGuardExemptGroupIds: [999],
+        }
+      )
+      client.start()
+    })
+    const msg = await received
+    expect(msg.chatId).toBe("999")
+    expect(msg.rawText).toContain("https://not-allowed.example/x")
+    expect(actions).not.toContain("delete_msg")
+  })
+
   it("open 后按 pingIntervalMs 主动发 ws ping", async () => {
     let pings = 0
     const port = await startServer((ws) => {
