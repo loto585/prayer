@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server"
 import { z } from "zod"
 import { getRuntime } from "@/lib/runtime"
-import { fail, ok } from "@/lib/api"
-import { broadcastMessage, normalizeGroupIds, resolveQqOps } from "@/lib/qq/ops"
+import { fail, ok } from "@/lib/core/api"
+import { broadcastMessage, normalizeGroupIds, resolveQqOps } from "@/lib/channels/qq/ops"
 
 const requestSchema = z.object({
   groupIds: z

@@ -2,7 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from "react"
 import { ChevronLeft } from "lucide-react"
-import { cn } from "@/lib/utils"
+import { cn } from "@/lib/core/utils"
 
 // Tailwind 断点像素值(与下方 md:/lg: 前缀一一对应)
 const BP_PX = { md: 768, lg: 1024 } as const
@@ -72,7 +72,7 @@ export function MasterDetail({
           <button
             type="button"
             onClick={onBack}
-            className="-mx-1 mb-2 flex h-11 shrink-0 items-center gap-1 px-1 text-sm text-muted-foreground hover:text-foreground"
+            className="-mx-1 mb-2 flex h-11 shrink-0 items-center gap-1 rounded-md px-1 text-sm text-muted-foreground hover:bg-muted hover:text-foreground"
           >
             <ChevronLeft className="size-4" />
             {backLabel}
@@ -86,7 +86,7 @@ export function MasterDetail({
   return (
     <div
       className={cn(
-        "grid min-h-0 min-w-0 flex-1 gap-4",
+        "grid min-h-0 min-w-0 flex-1 gap-3 lg:gap-4",
         breakpoint === "md"
           ? "md:grid-cols-[var(--cols)]"
           : "lg:grid-cols-[var(--cols)]",

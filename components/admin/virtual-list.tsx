@@ -2,7 +2,7 @@
 
 import { useRef, type ReactNode } from "react"
 import { useVirtualizer } from "@tanstack/react-virtual"
-import { cn } from "@/lib/utils"
+import { cn } from "@/lib/core/utils"
 
 // 通用虚拟列表:只渲染可视区行,变高由 measureElement 的 ResizeObserver 自动重测
 // (展开 details、长文本换行都会触发重测)。用于条目数可能上百的后台列表,
@@ -39,7 +39,10 @@ export function VirtualList<T>({
   })
 
   return (
-    <div ref={parentRef} className={cn("overflow-y-auto", className)}>
+    <div
+      ref={parentRef}
+      className={cn("min-h-0 min-w-0 overflow-y-auto", className)}
+    >
       <div
         style={{
           height: virtualizer.getTotalSize(),
@@ -52,6 +55,7 @@ export function VirtualList<T>({
             key={vi.key}
             data-index={vi.index}
             ref={virtualizer.measureElement}
+            className="min-w-0"
             style={{
               position: "absolute",
               top: 0,

@@ -1,16 +1,14 @@
 import { NextRequest, NextResponse } from "next/server"
 import { z } from "zod"
-import { sharedDb } from "@/lib/db/shared"
-import { Repo } from "@/lib/db/repo"
-import { getConfig } from "@/lib/config-store"
-import { ok, fail } from "@/lib/api"
-import { bus } from "@/lib/bus"
+import { getAppContext } from "@/lib/core/app-context"
+import { ok, fail, safeApiError } from "@/lib/core/api"
+import { bus } from "@/lib/core/bus"
+import { readJsonBody, REQUEST_BODY_TOO_LARGE } from "@/lib/core/http-security"
+import { withAdminMutationAudit } from "@/lib/core/admin-audit-route"
 
-function sessionContext(): { repo: Repo; resumeTtlMs: number } {
-  const cfg = getConfig(
-    new Repo(sharedDb(process.env.DB_PATH ?? "./data/agent.db"))
-  )
-  return { repo: new Repo(sharedDb(cfg.dbPath)), resumeTtlMs: cfg.resumeTtlMs }
+function sessionContext() {
+  const { repo, cfg } = getAppContext()
+  return { repo, resumeTtlMs: cfg.resumeTtlMs }
 }
 
 export async function GET(): Promise<NextResponse> {
@@ -21,10 +19,7 @@ export async function GET(): Promise<NextResponse> {
       ok(sessionRepo.listSessions(resumeTtlMs, Date.now(), 500))
     )
   } catch (err) {
-    return NextResponse.json(
-      fail(err instanceof Error ? err.message : String(err)),
-      { status: 500 }
-    )
+    return NextResponse.json(fail(safeApiError(err)), { status: 500 })
   }
 }
 
@@ -40,26 +35,56 @@ const actionSchema = z.discriminatedUnion("action", [
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
   try {
-    const body = await req.json().catch(() => null)
+    const body = await readJsonBody(req)
+    if (body === REQUEST_BODY_TOO_LARGE)
+      return NextResponse.json(fail("请求体过大"), { status: 413 })
     const parsed = actionSchema.safeParse(body)
     if (!parsed.success)
       return NextResponse.json(fail("参数非法"), { status: 400 })
     const { repo } = sessionContext()
+    const action = {
+      reset_all: "sessions.reset_all",
+      reset: "sessions.reset",
+      resume_handoff: "sessions.resume_handoff",
+    } as const
+    return withAdminMutationAudit(
+      repo,
+      {
+        action: action[parsed.data.action],
+        route: "/api/sessions",
+        method: "POST",
+      },
+      () => {
+        if (parsed.data.action === "reset_all") {
+          const reset = repo.clearAllResumeIds()
+          return NextResponse.json(ok({ reset }))
+        }
+        if (parsed.data.action === "reset") {
+          repo.clearResumeId(parsed.data.key)
+          return NextResponse.json(ok({ reset: 1 }))
+        }
+        if (!repo.isHumanMode(parsed.data.key))
+          return NextResponse.json(fail("会话未处于人工接待中"), {
+            status: 409,
+          })
 
-    if (parsed.data.action === "reset_all") {
-      const reset = repo.clearAllResumeIds()
-      return NextResponse.json(ok({ reset }))
-    }
-    if (parsed.data.action === "reset") {
-      repo.clearResumeId(parsed.data.key)
-      return NextResponse.json(ok({ reset: 1 }))
-    }
-    bus.emit("handoff.resumed", { sessionKey: parsed.data.key, by: "admin" })
-    return NextResponse.json(ok({ resumed: 1 }))
-  } catch (err) {
-    return NextResponse.json(
-      fail(err instanceof Error ? err.message : String(err)),
-      { status: 500 }
+        if (
+          !bus.emit("handoff.resumed", {
+            sessionKey: parsed.data.key,
+            by: "ui",
+          })
+        )
+          return NextResponse.json(fail("人工接待处理器未就绪"), {
+            status: 503,
+          })
+
+        if (repo.isHumanMode(parsed.data.key))
+          return NextResponse.json(fail("恢复自动答未完成"), { status: 503 })
+
+        return NextResponse.json(ok({ resumed: 1 }))
+      }
     )
+  } catch (err) {
+    return NextResponse.json(fail(safeApiError(err)), { status: 500 })
   }
 }

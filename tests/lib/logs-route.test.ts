@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { GET } from "@/app/api/logs/route"
-import { logger } from "@/lib/logger"
+import { logger } from "@/lib/core/logger"
 
 beforeEach(() => logger.clear())
 afterEach(() => logger.clear())

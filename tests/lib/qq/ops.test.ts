@@ -8,7 +8,7 @@ import {
   resolveQqOps,
   setWholeBan,
   type QqOps,
-} from "@/lib/qq/ops"
+} from "@/lib/channels/qq/ops"
 
 function fakeOps(failIds: number[] = [], throwIds: number[] = []) {
   const calls: Array<{ op: string; groupId: number; args: unknown[] }> = []

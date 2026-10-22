@@ -1,10 +1,14 @@
-import type { ActionSend, ImageInput } from "../../events"
-import type { Channel, ChannelCapabilities, ChannelStatus } from "../types"
+import type { ActionSend, ImageInput } from "../../core/chat/events"
+import type {
+  Channel,
+  ChannelCapabilities,
+  ChannelStatus,
+} from "../../core/chat/types"
 import {
   OneBotClient,
   type OneBotApiResult,
-  type OneBotKeepaliveOpts,
   type OneBotStats,
+  type QqLinkGuardOptions,
 } from "./client"
 
 const QQ_CAPABILITIES: ChannelCapabilities = {
@@ -32,7 +36,7 @@ export class QqChannel implements Channel {
     url: string,
     accessToken?: string,
     onStatus?: (connected: boolean) => void,
-    opts?: OneBotKeepaliveOpts
+    opts?: QqLinkGuardOptions
   ) {
     this.client = new OneBotClient(url, accessToken, onStatus, opts)
   }
@@ -51,11 +55,14 @@ export class QqChannel implements Channel {
   }
 
   status(): ChannelStatus {
+    const stats = this.client.stats()
     return {
       id: this.id,
       connected: this.isConnected(),
-      lastError: this.lastError,
-      detail: formatQqDetail(this.client.stats()) ?? this.detail,
+      // start() 只启动后台 WS 循环；连接错误发生在其返回之后，需从 client
+      // 读取当前错误，否则 readiness/管理页会一直只看到「未连接」。
+      lastError: this.lastError ?? stats.lastError,
+      detail: formatQqDetail(stats) ?? this.detail,
     }
   }
 
@@ -67,7 +74,7 @@ export class QqChannel implements Channel {
   async send(action: ActionSend): Promise<void> {
     // 防御：仅本通道（registry 已过滤，双保险）
     if (action.channel !== "qq") return
-    this.client.send(action)
+    await this.client.send(action)
   }
 
   async listChats(): Promise<{ id: string; name: string }[] | undefined> {
@@ -84,28 +91,16 @@ export class QqChannel implements Channel {
     return this.client.getGroupMemberList(Number(chatId))
   }
 
-  async setGroupAddRequest(
-    flag: string,
-    approve: boolean,
-    reason?: string
-  ): Promise<OneBotApiResult> {
-    return this.client.setGroupAddRequest(flag, approve, reason)
-  }
-
-  async sendGroupMessage(
+  sendGroupMessage(
     groupId: number,
     text: string,
     mentionAll = false,
-    images?: ImageInput[]
+    images: ImageInput[] = []
   ): Promise<OneBotApiResult> {
     return this.client.sendGroupMessage(groupId, text, mentionAll, images)
   }
 
-  async deleteMessage(messageId: number): Promise<OneBotApiResult> {
-    return this.client.deleteMessage(messageId)
-  }
-
-  async setGroupNotice(
+  setGroupNotice(
     groupId: number,
     content: string,
     pinned = false
@@ -113,11 +108,19 @@ export class QqChannel implements Channel {
     return this.client.setGroupNotice(groupId, content, pinned)
   }
 
-  async setGroupWholeBan(
+  setGroupWholeBan(
     groupId: number,
     enable: boolean
   ): Promise<OneBotApiResult> {
     return this.client.setGroupWholeBan(groupId, enable)
+  }
+
+  setGroupAddRequest(
+    flag: string,
+    approve: boolean,
+    reason?: string
+  ): Promise<OneBotApiResult> {
+    return this.client.setGroupAddRequest(flag, approve, reason)
   }
 }
 
@@ -137,6 +140,9 @@ export function formatQqDetail(
   }
   if (stats.staleReconnects > 0) {
     parts.push(`stale-reconnects=${stats.staleReconnects}`)
+  }
+  if ((stats.connectionErrors ?? 0) > 0) {
+    parts.push(`connection-errors=${stats.connectionErrors}`)
   }
   return parts.length > 0 ? parts.join(" ") : undefined
 }

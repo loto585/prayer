@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { checkOrderPaid, extractOrderNo } from "@/lib/qq/order-validation"
+import { checkOrderPaid, extractOrderNo } from "@/lib/conversation/order-validation"
 
 describe("QQ 加群订单校验", () => {
   it("提取三种订单号格式并拒绝短/纯数字值", () => {

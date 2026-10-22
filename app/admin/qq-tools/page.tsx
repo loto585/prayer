@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useState } from "react"
-import { Megaphone, RefreshCw, Send, Pin } from "lucide-react"
+import { RefreshCw, Send, Pin } from "lucide-react"
 import { toast } from "sonner"
 import { PageShell } from "@/components/admin/page-shell"
 import { PageHeader } from "@/components/admin/page-header"
@@ -168,7 +168,6 @@ export default function QqToolsPage() {
       <SectionCard
         title="目标群"
         description="选择已连接 QQ 账号所在的群，也可以直接输入群号。"
-        icon={Megaphone}
       >
         <FieldGroup>
           {groups === null ? (
@@ -214,7 +213,6 @@ export default function QqToolsPage() {
         <SectionCard
           title="群发消息"
           description="逐群发送普通消息，可同时 @全体成员。"
-          icon={Send}
         >
           <FieldGroup>
             <Field>
@@ -251,7 +249,6 @@ export default function QqToolsPage() {
         <SectionCard
           title="群公告"
           description="在所选群发布一条群公告，默认不置顶。"
-          icon={Pin}
         >
           <FieldGroup>
             <Field>

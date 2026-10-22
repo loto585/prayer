@@ -8,15 +8,16 @@ import { Switch } from "@/components/ui/switch"
 import { Badge } from "@/components/ui/badge"
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field"
 import {
-  Table,
   TableBody,
   TableCell,
   TableHead,
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { TableShell } from "@/components/admin/table-shell"
+import { RowActions } from "@/components/admin/row-actions"
 import {
-  Select,
+  Select as BaseSelect,
   SelectContent,
   SelectItem,
   SelectTrigger,
@@ -103,22 +104,24 @@ export default function PluginsPage() {
     <PageShell>
       <PageHeader
         title="插件"
-        description="安装、更新与启停插件，操作后自动生效。"
+        description="安装、更新与启停插件，操作后自动生效；已装插件可启停、更新或卸载。"
       />
 
       {err && <ErrorState description={err} onRetry={load} />}
 
       <SectionCard
         title="添加插件"
-        icon={Plus}
         description="GitHub 填写 owner/repo，本地填写绝对路径；市场名与插件名见 marketplace.json。"
       >
         <FieldGroup className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <Field>
             <FieldLabel>来源</FieldLabel>
-            <Select
+            <BaseSelect
+              items={{ github: "GitHub", directory: "本地目录" }}
               value={form.source}
-              onValueChange={(v) => setForm({ ...form, source: v })}
+              onValueChange={(v) => {
+                if (v !== null) setForm({ ...form, source: v })
+              }}
             >
               <SelectTrigger className="w-full">
                 <SelectValue />
@@ -127,7 +130,7 @@ export default function PluginsPage() {
                 <SelectItem value="github">GitHub</SelectItem>
                 <SelectItem value="directory">本地目录</SelectItem>
               </SelectContent>
-            </Select>
+            </BaseSelect>
           </Field>
           <Field>
             <FieldLabel>
@@ -171,10 +174,7 @@ export default function PluginsPage() {
         </FieldGroup>
       </SectionCard>
 
-      <SectionCard
-        title="已装插件"
-        description="已安装的插件，可启停、更新或卸载。"
-      >
+      <div className="flex flex-col gap-3">
         {plugins.length === 0 ? (
           <EmptyState
             icon={Puzzle}
@@ -182,14 +182,14 @@ export default function PluginsPage() {
             description="使用上方表单安装插件。"
           />
         ) : (
-          <Table>
+          <TableShell minWidth="min-w-[640px]">
             <TableHeader>
               <TableRow>
                 <TableHead>ID</TableHead>
                 <TableHead>版本</TableHead>
                 <TableHead>scope</TableHead>
                 <TableHead>启用</TableHead>
-                <TableHead className="text-right">操作</TableHead>
+                <TableHead className="w-12 text-right">操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -208,37 +208,33 @@ export default function PluginsPage() {
                     />
                   </TableCell>
                   <TableCell className="text-right">
-                    <div className="flex justify-end gap-2">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={busy}
-                        onClick={() => update(p)}
-                        aria-label="更新插件"
-                        title="更新"
-                      >
-                        <RotateCw data-icon="inline-start" />
-                        更新
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={busy}
-                        onClick={() => remove(p)}
-                        aria-label="卸载插件"
-                        title="卸载"
-                      >
-                        <Trash2 data-icon="inline-start" />
-                        卸载
-                      </Button>
-                    </div>
+                    <RowActions
+                      items={[
+                        {
+                          key: "update",
+                          label: "更新",
+                          icon: <RotateCw />,
+                          disabled: busy,
+                          onSelect: () => void update(p),
+                        },
+                        {
+                          key: "remove",
+                          label: "卸载",
+                          icon: <Trash2 />,
+                          variant: "destructive",
+                          disabled: busy,
+                          separatorBefore: true,
+                          onSelect: () => void remove(p),
+                        },
+                      ]}
+                    />
                   </TableCell>
                 </TableRow>
               ))}
             </TableBody>
-          </Table>
+          </TableShell>
         )}
-      </SectionCard>
+      </div>
     </PageShell>
   )
 }

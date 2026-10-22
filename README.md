@@ -5,7 +5,7 @@
 > 把重复问答交给 AI，把复杂问题交给人工，把每一次服务沉淀成下一次更好的答案。
 
 <p align="center">
-  <img src="docs/assets/qiyuan-mark.png" alt="Prayer 品牌标志" width="92" />
+  <img src="docs/assets/prayer-mark.png" alt="Prayer 品牌标志" width="92" />
   <br />
   <strong>Prayer</strong>
 </p>
@@ -15,7 +15,7 @@ Prayer 面向需要在 QQ、Telegram 等社区场景持续提供产品咨询的�
 ## 产品价值
 
 <p align="center">
-  <img src="docs/assets/qiyuan-value.svg" alt="Prayer 产品价值概览" width="100%" />
+  <img src="docs/assets/prayer-value.svg" alt="Prayer 产品价值概览" width="100%" />
 </p>
 
 <p align="center">
@@ -51,16 +51,14 @@ Prayer 把这三个问题做成了产品闭环：
 
 ### 品牌与业务分离
 
-Prayer 是默认平台品牌，不预设部署方一定经营某个产品。品牌名称、简介和客服回复规则可在 `/admin/config` 的「品牌」页签中修改；主 Agent、意图分类、主动补位、问题归类与后台标题会使用同一份配置。产品事实来自部署方知识库，价格、状态、公告等实时能力由启用的业务插件提供。
-
-「客服回复规则」适合填写称呼、语气、回复格式和自我介绍方式，例如“自我介绍时只称为某某公司官方客服机器人”。底层模型、SDK 和运行环境不会作为对外身份展示；修改身份或规则后，建议对已有会话执行一次 `/reset <sessionKey>`，让下一轮从新的上下文开始。
+Prayer 是默认平台品牌，不预设部署方一定经营某个产品。品牌名称和简介可在 `/admin/config` 的「品牌」页签中修改；主 Agent、意图分类、主动补位、问题归类与后台标题会使用同一份配置。产品事实来自部署方知识库，价格、状态、公告等实时能力由启用的业务插件提供。
 
 仓库中的 `packyapi` 是一个可选业务插件示例。启用它时可以查询 PackyAPI 的实时数据；停用或替换它不会改变 Prayer 的平台身份。
 
 ## 一次咨询如何被处理
 
 <p align="center">
-  <img src="docs/assets/qiyuan-response-flow.svg" alt="Prayer 一次咨询的处理流程" width="100%" />
+  <img src="docs/assets/prayer-response-flow.svg" alt="Prayer 一次咨询的处理流程" width="100%" />
 </p>
 
 Prayer 的关键不是让模型“尽量回答”，而是让每一次回答都经过依据判断：有依据就自动解决，需要业务数据就调用工具，不确定就安全转人工，最终把结果沉淀下来。
@@ -68,8 +66,29 @@ Prayer 的关键不是让模型“尽量回答”，而是让每一次回答都�
 ## 运行架构
 
 <p align="center">
-  <img src="docs/assets/qiyuan-architecture.svg" alt="Prayer 运行架构图" width="100%" />
+  <img src="docs/assets/prayer-architecture.svg" alt="Prayer 运行架构图" width="100%" />
 </p>
+
+### 代码分层
+
+运行架构图展示的是代码边界，而不是进程数量。Prayer 的 `lib/` 只有一个组合根；其余模块按职责分层，依赖方向固定为“上层使用下层”：
+
+<p align="center">
+  <img src="docs/assets/prayer-code-layers.svg" alt="Prayer 代码分层与依赖方向" width="100%" />
+</p>
+
+`channels` 与 `knowledge` 是同级模块，互不依赖；`conversation` 可以组合所有下层能力，`runtime.ts` 负责装配生命周期。`app/` 页面和 API 可以依赖全部层，`components/` 只依赖 `components/` 自身与 `lib/core/`。这些边界由 [`tests/architecture/layering.test.ts`](tests/architecture/layering.test.ts) 自动检查，旧的 `lib/agent`、`lib/db`、`lib/config`、`lib/tools` 和 `lib/onebot` 路径已退役。
+
+新增能力按下面的落位规则放置：
+
+| 需求                                   | 落位                                                          |
+| -------------------------------------- | ------------------------------------------------------------- |
+| 新消息通道                             | `lib/channels/<channel>/`，并在 `registry` / `factory` 中注册 |
+| Agent、会话与编排                      | `lib/conversation/`                                           |
+| 知识库、反思与知识升格                 | `lib/knowledge/`                                              |
+| SDK 调用、embedding、工具策略与用量    | `lib/model/`                                                  |
+| 数据库、配置、事件总线与共享展示纯函数 | `lib/core/`                                                   |
+| 进程启动与运行时装配                   | `lib/runtime.ts`                                              |
 
 ### 客服闭环
 
@@ -95,21 +114,21 @@ Prayer 的关键不是让模型“尽量回答”，而是让每一次回答都�
 | `/admin/kb`           | 知识文档管理、编辑和向量摄入                         |
 | `/admin/reflection`   | 反思条目、整理进度和知识升格                         |
 | `/admin/ranking`      | 高频问题排行，帮助团队发现产品与文档缺口             |
-| `/admin/config`       | QQ、Telegram、回复体验、会话、反思、通知和存储配置   |
-| `/admin/qq-tools`     | 多群群发消息、@全体成员和批量发布群公告（可选置顶）  |
+| `/admin/config`       | QQ、Telegram、回复体验、会话、反思、通知和存储路径查看（DB_PATH 只读） |
 | `/admin/groups`       | 生效会话、活动量和会话级策略覆盖                     |
 | `/admin/capabilities` | 当前 Agent 的插件、Skill、MCP 与工具能力             |
 | `/admin/plugins`      | 插件安装、更新、启停和重载                           |
+| `/admin/audit`        | 有限窗口内的管理变更轨迹与未结束审计事件             |
 
 <p align="center">
-  <img src="docs/assets/qiyuan-operations.svg" alt="Prayer 管理后台能力图" width="100%" />
+  <img src="docs/assets/prayer-operations.svg" alt="Prayer 管理后台能力图" width="100%" />
 </p>
 
-建议在生产环境设置 `ADMIN_TOKEN`，为管理后台和 `/api` 开启口令保护。
+开发环境可省略 `ADMIN_TOKEN`；生产环境必须设置，否则管理后台和 `/api` 会 fail-closed。
 
 ## 技术底座
 
-Prayer 以单个 Node.js 进程运行 Next.js 管理后台和客服 Agent。`instrumentation.ts` 在 Node runtime 启动时装配运行时，因此启动一个生产服务进程即可同时获得：
+Prayer 以单个 Node.js 进程运行 Next.js 管理后台和客服 Agent。`instrumentation.ts` 仅在 Node runtime 启动时加载数据库、配置和 `lib/runtime.ts`，由组合根装配通道、会话编排、知识循环与模型能力；因此启动一个生产服务进程即可同时获得：
 
 - QQ / Telegram 通道连接与消息分发
 - Agent 会话编排、知识检索、工具调用与人工接管
@@ -133,26 +152,6 @@ Prayer 以单个 Node.js 进程运行 Next.js 管理后台和客服 Agent。`ins
 - pnpm `11`
 - 能够运行 Claude Agent SDK 所需的本地 `claude` 可执行文件
 - 至少配置一个消息通道：QQ 或 Telegram
-
-#### 操作系统与 CPU 架构
-
-项目中的 Node 原生依赖会按当前 Node 的架构重新安装。当前锁定的
-`onnxruntime-node@1.23.2` 提供 macOS、Windows 和 Linux 的 x64/arm64
-binding，因此 macOS Intel、Apple Silicon、Windows x64 以及 Linux 两种架构
-均可直接安装运行。`sqlite-vec@0.1.9` 的上游包目前没有 Windows arm64 扩展；
-Windows on ARM 请使用 x64 Node（Windows 的 x64 模拟层），或在 Linux/macOS
-环境中运行向量检索功能。
-
-Apple Silicon 推荐使用原生 arm64 Node 24。切换 Node 架构后请删除并重新安装
-依赖，不要在 x64 与 arm64 Node 之间共用同一个 `node_modules`：
-
-```bash
-pnpm install --force --frozen-lockfile
-pnpm rebuild onnxruntime-node better-sqlite3 sqlite-vec
-```
-
-数据库默认路径为 `./data/agent.db`。程序首次打开数据库时会自动创建 `data/`
-父目录，无需手工创建。
 
 ### 1. 安装依赖
 
@@ -187,7 +186,11 @@ cp .env.example .env
 pnpm ingest
 ```
 
-摄入过程会生成本地 embedding 并写入 sqlite-vec。`docs/kb/` 默认不纳入版本控制，生产环境建议使用受控目录、挂载卷或通过管理后台维护。
+摄入过程会生成本地 embedding 并写入生产 SQLite 的 sqlite-vec 索引；执行前后可用只读
+`pnpm kb:freshness` 核对文件、分块和向量维度，报告失败时应先取得授权再做受控重建。
+生产重建前请暂停 PM2/后台写入任务，避免 CLI 与运行中的进程并发修改索引。
+`docs/kb/_archive/` 中的可见 Markdown/TXT 不会进入生产入库。`docs/kb/` 默认不纳入版本
+控制，生产环境建议使用受控目录、挂载卷或通过管理后台维护。
 
 ### 4. 构建并启动
 
@@ -198,7 +201,7 @@ pnpm start
 
 访问 <http://localhost:3000/admin>，在配置页完成通道、生效会话和管理面设置。
 
-> `pnpm dev` 只适合开发管理后台。生产客服 Agent 依赖真实 Node runtime 和本地 `claude` 可执行文件，生产环境必须使用 `pnpm build && pnpm start` 或 PM2。
+> `pnpm dev` 只适合开发管理后台。默认也会自动启动客服运行时；做只读 UI 验证时，可使用 `DB_PATH="$(mktemp -d)/agent.db" PRAYER_SKIP_RUNTIME_BOOT=1 pnpm dev` 跳过该自动启动。此开关不阻止显式的运行时重启、配置或插件写操作，不能当作写操作沙箱。生产客服 Agent 依赖真实 Node runtime 和本地 `claude` 可执行文件，生产环境必须使用 `pnpm build && pnpm start` 或 PM2。
 
 ## 通道配置
 
@@ -210,35 +213,6 @@ pnpm start
 4. 配置机器人 QQ 号 `BOT_QQ`，并在 `/admin/config` 选择生效群。
 5. 需要接收转人工通知时，配置 QQ 管理面；管理面只处理管理命令，不参与客服问答。
 6. 在生效群中 @ 机器人发送测试问题。
-
-管理群支持以下指令，前缀半角 `/` 与全角 `／` 均可；旗标紧跟指令名、全部英文：
-
-| 指令                       | 作用                                                             |
-| -------------------------- | ---------------------------------------------------------------- |
-| `/reset <sessionKey>`      | 重置该会话的对话上下文                                           |
-| `/resume <sessionKey>`     | 恢复该会话的自动答复                                             |
-| `/群发 <内容>`             | 向全部生效 QQ 群发送消息；同条消息附带的图片一并发出，可只发图   |
-| `/群发 -all <内容>`        | 同上，并 @全体成员（用 QQ 自带的「@全体成员」也会被识别为 -all） |
-| `/公告 <内容>`             | 在全部生效 QQ 群发布群公告（不置顶）                             |
-| `/公告 -pin <内容>`        | 发布群公告并置顶                                                 |
-| `/写公告 <要点>`           | 按团队风格起草一条公告，回草稿到管理群（不发布）                 |
-| `/发布 [-pin]`             | 发布最近一份草稿，10 分钟内有效；-pin 置顶                       |
-| `/禁言 -on` / `/禁言 -off` | 全部生效 QQ 群开启 / 解除全员禁言                                |
-| `/禁言 -on -t <时长>`      | 限时禁言，到期自动解除（`-t 30m`）                               |
-| `-g <群号>`                | 群发／公告／发布／禁言只操作一个群；群号必须在生效会话里         |
-| `-t <时长>`                | 群发／公告／发布上先限时禁言再发送；不带则不禁言                 |
-
-`-t` 的时长写法为 `10s` / `30m` / `2h` / `1d`，取值范围 10 秒到 7 天，超出会回用法提示。到期状态会落库：进程重启后第一个扫描周期（30 秒）会自动补上欠下的解禁，不会把群卡在禁言状态。手动 `/禁言 -off`、或改用不带 `-t` 的永久禁言，都会撤销该群的待解禁记录。
-
-旗标必须整词（`-all` 后接空格或换行），内容可以多行；指令名与内容之间的空格可省略。目标群取自「生效会话」里的 QQ 群，管理群自身始终排除。执行完成后管理群会收到逐群结果回执；同一条指令因重连被重放时不会二次执行。旧的 `!` 前缀不再是指令，发出去会收到用法提示。
-
-`/写公告` 只起草、不发布：机器人把草稿连同 `/发布` 提示回到管理群，管理员看过之后回复 `/发布` 才真正发布；草稿 10 分钟内有效，过期或用过一次即失效。公告风格由 `plugins/announce/skills/announce/SKILL.md` 定义：那是 markdown，改格式、语气、范例不用改代码。风格文件在每次起草时现读，本地直接编辑即生效；Docker 部署下 `plugins/` 是随镜像构建的（`compose.yaml` 未挂载该目录），改完要重新构建镜像，仅重启容器不会更新。该风格文件按相对仓库根的路径解析，进程工作目录须是仓库根（与 `docs/kb` 同一约定）。
-
-QQ 运营工具位于 `/admin/qq-tools`，与上述指令共用同一套发送逻辑。页面中选择多个群后，可以分别执行群发消息或发布群公告（勾选「置顶」才置顶，与 `/公告 -pin` 一致）；群发的「@全体成员」使用 OneBot 的 `at=all` 消息段。执行账号必须具备对应群的管理员权限。
-
-群公告针对 NapCat 使用其 Go-CQHTTP 扩展动作 `_send_group_notice`（而不是标准动作 `send_group_notice`），群号和置顶标志会按 NapCat 的协议自动转换；`POST /api/qq/notice` 可传 `pinned: true` 置顶，缺省不置顶。
-
-链接白名单在 `/admin/config` 的 QQ 通道设置中开启。匹配忽略顶级域：白名单填 `rightapi.ai` 时，`rightapi.com`、`rightapi.cn`、`rightapi.org` 等同名后缀一并放行，`www.` 前缀与子域名同样自动放行。裸域名（不带 `https://`，如 `360.com`）也算链接，会被一并检查，但 `index.js`、`1.5`、`a@b.com` 这类文件名、版本号与邮箱不会被误判。开启后，群成员发送的不在列表中的链接会先调用 OneBot `delete_msg` 撤回，并不会进入客服处理链路。机器人自身发送的消息不会被撤回。
 
 ### Telegram
 
@@ -253,31 +227,36 @@ Telegram chat id 必须按字符串保存，尤其是超级群的负数 id，不
 
 环境变量用于首次启动时提供种子值；保存后的业务配置持久化在 SQLite 中，并可在管理后台修改。模型凭证始终由 `settings.json` 管理。
 
+`DB_PATH` 是部署级存储边界，管理后台中的存储路径只读；迁移数据库时请停机、备份并在部署环境修改 `DB_PATH`，再按[数据库迁移与备份](docs/database-operations.md)验证，不支持在线搬库。
+通常应填写普通文件路径；也接受不带 query/fragment 的本机绝对 `file:` URI。SQLite URI
+选项和远程/相对 `file:` URI 会被拒绝，避免把只读等 URI 语义静默改成普通文件打开。
+
 常用环境变量：
 
-| 变量                        | 作用                                                   |
-| --------------------------- | ------------------------------------------------------ |
-| `BRAND_NAME`                | 首次启动时的品牌名称，默认 `Prayer`                    |
-| `BRAND_DESCRIPTION`         | 首次启动时的品牌/业务简介                              |
-| `REPLY_RULES`               | 首次启动时的客服表达规则，可在后台继续编辑             |
-| `CLAUDE_CONFIG_DIR`         | Agent SDK 配置目录，默认 `./data/claude-config`        |
-| `DB_PATH`                   | SQLite 数据库路径，默认 `./data/agent.db`              |
-| `ONEBOT_WS_URL`             | QQ / OneBot 正向 WebSocket 地址                        |
-| `ONEBOT_ACCESS_TOKEN`       | OneBot 鉴权 token，可选                                |
-| `BOT_QQ`                    | QQ 机器人账号                                          |
-| `QQ_LINK_WHITELIST_ENABLED` | 首次启动时是否开启 QQ 链接白名单，默认关闭             |
-| `QQ_LINK_WHITELIST`         | 首次启动时的允许域名列表，逗号或空格分隔               |
-| `TELEGRAM_BOT_TOKEN`        | Telegram Bot token                                     |
-| `TELEGRAM_ENABLED_CHATS`    | 首次启动时种子的 Telegram chat id 列表，逗号或空格分隔 |
-| `ADMIN_GROUP_ID`            | 首次启动时种子的 QQ 管理面                             |
-| `ADMIN_TOKEN`               | 管理后台和 API 的访问口令，可选但建议生产开启          |
-| `HANDOFF_TIMEOUT_MIN`       | 转人工超时后恢复自动答的分钟数                         |
-| `RESUME_TTL_MS`             | 会话续接空闲时间，设为 `0` 关闭过期                    |
-| `KB_PREFETCH_ENABLED`       | 是否在每轮消息前自动预检索，默认开启                   |
-| `PROACTIVE_ENABLED`         | 是否开启无人应答主动补位，默认关闭                     |
-| `SUPPORT_URL`               | 无法处理业务时展示的支持链接                           |
-| `MAX_REPLY_CHARS`           | 单条回复拆分上限，`0` 表示不拆分                       |
-| `USAGE_BUDGET_USD`          | 日用量预算，`0` 表示不告警                             |
+| 变量                     | 作用                                                                     |
+| ------------------------ | ------------------------------------------------------------------------ |
+| `BRAND_NAME`             | 首次启动时的品牌名称，默认 `Prayer`                                      |
+| `BRAND_DESCRIPTION`      | 首次启动时的品牌/业务简介                                                |
+| `CLAUDE_CONFIG_DIR`      | Agent SDK 配置目录，默认 `./data/claude-config`                          |
+| `DB_PATH`                | SQLite 数据库路径，默认 `./data/agent.db`                                |
+| `ONEBOT_WS_URL`          | QQ / OneBot 正向 WebSocket 地址                                          |
+| `ONEBOT_ACCESS_TOKEN`    | OneBot 鉴权 token，可选                                                  |
+| `BOT_QQ`                 | QQ 机器人账号                                                            |
+| `TELEGRAM_BOT_TOKEN`     | Telegram Bot token                                                       |
+| `TELEGRAM_ENABLED_CHATS` | 首次启动时种子的 Telegram chat id 列表，逗号或空格分隔                   |
+| `ADMIN_GROUP_ID`         | 首次启动时种子的 QQ 管理面                                               |
+| `ADMIN_TOKEN`            | 管理后台和 API 的访问口令；开发可省略，生产必填（缺失时 fail-closed）    |
+| `PRAYER_SKIP_RUNTIME_BOOT` | 在 `development` 中设为 `1` 时跳过 Next 启动钩子的自动运行时启动；仅用于隔离的只读开发验证，不能阻止管理写操作 |
+| `PRAYER_MCP_ALLOWLIST`   | 额外显式放行的完整 MCP 工具名（逗号/空格分隔）；默认仅 CS/Packy 查询工具 |
+| `TRUST_PROXY`            | 仅可信反向代理已规范化 `X-Forwarded-For`、`X-Forwarded-Host`、`X-Forwarded-Proto` 时设为 `true`，用于登录限速和 Cookie 请求的 Origin 校验 |
+| `PRAYER_BACKUP_PATHS`    | 供权限审计检查的显式备份文件路径，不会递归扫描                           |
+| `HANDOFF_TIMEOUT_MIN`    | 转人工超时后恢复自动答的分钟数                                           |
+| `RESUME_TTL_MS`          | 会话续接空闲时间，设为 `0` 关闭过期                                      |
+| `KB_PREFETCH_ENABLED`    | 是否在每轮消息前自动预检索，默认开启                                     |
+| `PROACTIVE_ENABLED`      | 是否开启无人应答主动补位，默认关闭                                       |
+| `SUPPORT_URL`            | 无法处理业务时展示的支持链接                                             |
+| `MAX_REPLY_CHARS`        | 单条回复拆分上限，`0` 表示不拆分                                         |
+| `USAGE_BUDGET_USD`       | 日用量预算，`0` 表示不告警                                               |
 
 反思、整理、知识升格、主动补位和主题排行的完整参数见 [`.env.example`](.env.example)，也可以在 `/admin/config` 中调整。
 
@@ -297,7 +276,7 @@ pnpm pm:delete    # 从 PM2 移除
 ```
 
 <p align="center">
-  <img src="docs/assets/qiyuan-deployment.svg" alt="Prayer 生产部署拓扑" width="100%" />
+  <img src="docs/assets/prayer-deployment.svg" alt="Prayer 生产部署拓扑" width="100%" />
 </p>
 
 Linux 上可使用 systemd 配置开机自启：
@@ -307,137 +286,24 @@ pnpm pm:enable
 pnpm pm:disable
 ```
 
-### 宝塔面板一键部署
-
-推荐在宝塔服务器上使用宿主机 PM2 运行 Prayer，再用 Docker 运行 NapCat。这样
-Prayer 可以直接连接 `ws://127.0.0.1:3001`，数据库、模型配置和知识库也都在项目
-目录中，便于宝塔计划任务和备份管理。
-
-在宝塔软件商店安装 Node.js 24、Docker 管理器，并确认 Docker Compose v2 可用。
-然后在「终端」执行：
-
-```bash
-cd /www/wwwroot/prayer
-chmod +x deploy-baota.sh
-./deploy-baota.sh
-```
-
-也可以在宝塔计划任务或 CI 中非交互执行（首次执行前请确认服务器已准备好
-`data/claude-config/settings.json`，或同时提供下面的模型参数）：
-
-```bash
-BOT_QQ=123456 \
-NAPCAT_ACCOUNT=123456 \
-ADMIN_GROUP_ID=654321 \
-DEPLOY_BASE_URL=https://your-anthropic-compatible-endpoint \
-DEPLOY_AUTH_TOKEN='your-token' \
-DEPLOY_MODEL=your-model-id \
-./deploy-baota.sh
-```
-
-将 `deploy-baota.sh` 放到公开 Git 仓库后，也可以在宝塔终端先下载再执行；不要把
-包含真实 token 的命令保存到公开脚本或工单记录中：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/你的账号/prayer/main/deploy-baota.sh -o deploy-baota.sh
-chmod +x deploy-baota.sh
-./deploy-baota.sh
-```
-
-脚本会自动完成以下步骤：
-
-- 读取或创建 `.env`，交互式填写机器人 QQ、管理群、模型接口、模型 token 和模型名；
-- 自动生成 `ADMIN_TOKEN`，已有 `data/claude-config/settings.json` 和数据库不会覆盖；
-- 安装锁定版本依赖、摄入 `docs/kb/`、构建生产版本；
-- 启动主 NapCat 容器；
-- 启动或重启唯一的 PM2 进程 `prayer`，并保存 PM2 进程列表。
-
-如果服务器通过宝塔 Node.js 版本管理器安装 Node，脚本会自动查找
-`/www/server/nodejs/*/bin/node`。也可以在执行前手动选择 Node 版本并确保 `node`、
-`docker`、`docker compose` 在 PATH 中。
-
-脚本完成后，在宝塔「网站」中新建站点，将反向代理目标设为：
-
-```text
-http://127.0.0.1:3000
-```
-
-然后在宝塔申请并开启 HTTPS。不要把 3000、3001 或 6099 直接暴露到公网；NapCat
-面板只在本机监听，首次登录可用 SSH 隧道访问：
-
-```bash
-ssh -N -L 6099:127.0.0.1:6099 root@服务器IP
-```
-
-浏览器打开 `http://127.0.0.1:6099/webui`，扫码登录 NapCat，并在 WebUI 开启
-「正向 WebSocket 服务器」，监听 `0.0.0.0:3001`。如果启用了 OneBot token，需让
-NapCat 的 token 与 `.env` 中的 `ONEBOT_ACCESS_TOKEN` 完全一致；未启用鉴权则两边都留空。
-
-登录管理后台时使用脚本输出的 `ADMIN_TOKEN`。部署后常用检查命令：
-
-```bash
-cd /www/wwwroot/prayer
-pnpm exec pm2 status prayer
-pnpm exec pm2 logs prayer
-docker compose -f compose.napcat.yaml ps
-pnpm db:check
-```
-
-更新代码时重新执行 `./deploy-baota.sh` 即可；脚本会保留已有数据库、模型配置和
-`.env`。更新前建议在宝塔计划任务中执行 `pnpm db:backup`，并备份 `data/` 与
-`docs/kb/`。
-
-### Docker（隔离项目运行环境）
-
-仓库提供了 [Dockerfile](Dockerfile) 和 [compose.yaml](compose.yaml)。Docker 会在
-容器内单独安装 Node 24、pnpm 和原生依赖，不会改动宿主机 Node、pnpm 或其他项目
-的 `node_modules`。首次使用前准备配置文件：
-
-```bash
-cp .env.example .env
-mkdir -p data/claude-config
-# 编辑 data/claude-config/settings.json，填入模型服务地址、token 和模型名
-docker compose up -d --build
-```
-
-`data/` 和 `docs/kb/` 使用项目目录挂载，数据库、Claude 配置和知识库会保留在
-宿主机；程序仍会在首次打开 SQLite 时自动创建 `data/`。查看或停止服务：
-
-```bash
-docker compose logs -f prayer
-docker compose down
-```
-
-默认按 Docker 当前主机架构构建。Apple Silicon 使用 Linux arm64，Intel Mac、
-Windows x64 使用 Linux amd64。需要显式构建某个架构时使用 Buildx：
-
-```bash
-docker buildx build --platform linux/arm64 -t prayer:local --load .
-docker buildx build --platform linux/amd64 -t prayer:local --load .
-```
-
-也可以在 Compose 构建时指定目标架构：
-
-```bash
-DOCKER_DEFAULT_PLATFORM=linux/arm64 docker compose up -d --build
-DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose up -d --build
-```
-
-Windows ARM64 建议构建 Linux arm64 镜像，以避开 Windows ARM64 上游没有
-`sqlite-vec` 原生扩展的问题。容器访问宿主机上的 NapCat/OneBot 时，将
-`.env` 中的地址改为：
-
-```env
-ONEBOT_WS_URL=ws://host.docker.internal:3001
-```
-
 ### 部署边界
 
 - 必须使用标准 Node.js server runtime，不支持 Vercel、Edge Function 或其他 serverless 运行方式。
 - PM2 必须保持 `instances: 1` 和 `fork` 模式：better-sqlite3 是 native 依赖，通道包含长连接 / long polling。
 - Telegram 同一 Bot token 不支持多实例消费。
-- 发布前应备份 SQLite 数据库；可使用 `pnpm db:check` 和 `pnpm db:backup`。
-- 外部访问管理后台时，建议同时配置 `ADMIN_TOKEN`、HTTPS、反向代理访问控制和最小化开放端口。
+- 发布前应备份 SQLite 数据库；可使用 `pnpm db:check` 和 `pnpm db:backup`。备份命令是
+  一次性的本机原子备份，目标文件不得已存在；`pnpm db:restore-drill <备份路径>` 会在私有
+  临时副本上验证当前数据库层可打开该备份，不会停止、重启或替换运行实例。仓库不替部署方
+  提供自动 cron 或异地复制。
+- `pnpm db:report` 是可选的只读 JSON 运行报告，汇总数据库完整性、保留候选和 outbox
+  队列分布；可交给主机的 cron/systemd/监控系统采集，并在非零退出时告警。它不会创建
+  备份、删除数据或替代备份与恢复演练。
+- 外部访问管理后台时，生产必须配置 `ADMIN_TOKEN`，并同时启用 HTTPS、反向代理访问控制和最小化开放端口。
+- `/health/live` 只表示进程存活；`/health/ready` 会在必需通道未连接或启动失败时返回 `503`，可直接接入负载均衡健康检查。
+- 生产环境请将 `.env`、`settings.json`、SQLite 数据库/WAL/备份限制为 `0600`（仅进程用户
+  可读），并在部署前轮换凭据；`pnpm security:permissions` 默认只读审计，只有显式
+  `--apply` 才会修改已列出的普通文件，应用不会替你修改现有主机权限。
+- 插件管理 CLI 只继承定位 CLI、配置和临时目录所需的安全环境白名单；插件仍属于第三方代码，Claude 配置中的 hooks / `env` 可能继续向其注入权限，因此公开的不受信任插件仍需独立低权限隔离。
 
 ## 开发与验证
 
@@ -447,6 +313,11 @@ pnpm typecheck    # TypeScript 检查
 pnpm lint         # ESLint
 pnpm test         # Vitest
 pnpm check        # typecheck + lint + test
+pnpm kb:freshness # 只读核对 docs/kb 与 SQLite 分块/向量是否一致
+pnpm security:permissions # 只读审计；确认后用 `pnpm security:permissions -- --apply` 收紧到 600
+pnpm db:report # 只读 JSON 运行报告，供外部调度/监控采集
+pnpm db:restore-drill ./backups/agent.db # 临时副本恢复演练，不接触运行 DB
+pnpm db:retention # 默认只读预览；确认备份后用 `--apply` 清理过期数据
 ```
 
 涉及页面、路由或生产边界时，使用独立构建目录，避免覆盖正在运行的 `.next`：
@@ -466,16 +337,19 @@ NEXT_DIST_DIR=.next-verify pnpm build
 ```text
 app/                    管理后台页面与 API 路由
 components/             管理后台与通用 UI 组件
-lib/agent/              Agent、会话编排、人工接管与后台循环
-lib/channels/           QQ / Telegram 通道抽象与适配器
-lib/db/                 SQLite 数据访问、迁移与领域仓储
-lib/plugins/            插件生命周期管理
-plugins/                本地插件、Skill 与 MCP server
+lib/core/               L0 共享地基：db、config、chat 词汇、日志、总线与展示纯函数
+lib/model/              L1 模型基座：SDK、embedding、工具策略、prompt 与用量
+lib/channels/           L2 QQ / Telegram 通道实现、registry 与生命周期
+lib/knowledge/          L2 知识库与反思：检索、压缩、升格
+lib/conversation/       L3 会话与编排：Agent、网关、缓冲区、人工接管与后台循环
+lib/runtime.ts          L4 组合根：装配全部运行时能力
+plugins/                本地业务插件、Skill 与 MCP server
 scripts/                知识库摄入、数据库维护脚本
 docs/kb/                业务知识源文件（默认不入 Git）
 docs/assets/            README 与产品文档视觉素材
 data/                   运行时数据库与 SDK 配置（默认不入 Git）
 logs/                   PM2 与运行日志（默认不入 Git）
+tests/architecture/     分层与旧路径退役护栏
 ```
 
 ## 当前边界

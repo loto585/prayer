@@ -1,23 +1,31 @@
 import { NextResponse } from "next/server"
-import { sharedDb } from "@/lib/db/shared"
-import { Repo } from "@/lib/db/repo"
-import { getConfig } from "@/lib/config-store"
+import { getAppContext } from "@/lib/core/app-context"
 import { runIngest } from "@/scripts/ingest"
-import { KB_DIR } from "@/lib/kb-path"
-import { ok, fail } from "@/lib/api"
+import { ok, fail, safeApiError } from "@/lib/core/api"
+import { emptyBodyFailure, readEmptyBody } from "@/lib/core/http-security"
+import { withAdminMutationAudit } from "@/lib/core/admin-audit-route"
 
-export async function POST(): Promise<NextResponse> {
+export async function POST(req: Request): Promise<NextResponse> {
+  const bodyFailure = emptyBodyFailure(await readEmptyBody(req))
+  if (bodyFailure)
+    return NextResponse.json(fail(bodyFailure.message), {
+      status: bodyFailure.status,
+    })
   try {
-    const cfg = getConfig(
-      new Repo(sharedDb(process.env.DB_PATH ?? "./data/agent.db"))
+    const { repo } = getAppContext()
+    return withAdminMutationAudit(
+      repo,
+      { action: "kb.ingest", route: "/api/kb/ingest", method: "POST" },
+      async () => {
+        try {
+          const results = await runIngest(repo, "docs/kb")
+          return NextResponse.json(ok(results))
+        } catch (err) {
+          return NextResponse.json(fail(safeApiError(err)), { status: 500 })
+        }
+      }
     )
-    const db = sharedDb(cfg.dbPath)
-    const results = await runIngest(new Repo(db), KB_DIR)
-    return NextResponse.json(ok(results))
   } catch (err) {
-    return NextResponse.json(
-      fail(err instanceof Error ? err.message : String(err)),
-      { status: 500 }
-    )
+    return NextResponse.json(fail(safeApiError(err)), { status: 500 })
   }
 }

@@ -1,34 +1,48 @@
 import WebSocket from "ws"
-import { bus } from "../../bus"
-import type { ActionSend, ImageInput } from "../../events"
-import { logger } from "../../logger"
-import { enrich } from "../../onebot/enrich"
+import { bus, emitErrorSafely } from "../../core/bus"
+import type { ActionSend, ImageInput } from "../../core/chat/events"
+import { logger } from "../../core/logger"
+import { redactSensitive } from "../../core/log-context"
+import { enrich } from "./enrich"
+import { findBlockedLink } from "./link-whitelist"
 import {
   parseGroupMessage,
   parseGroupRequest,
+  type ParsedMessage,
   type RawGroupMessageEvent,
   type RawGroupRequestEvent,
-} from "../../onebot/parse"
+} from "./parse"
 import { StaleWatchdog } from "../keepalive"
-import { findBlockedLink } from "../../qq/link-whitelist"
 
 interface Pending {
-  resolve: (v: InboundFrame | undefined) => void
+  resolve: (v: unknown) => void
   timer: ReturnType<typeof setTimeout>
 }
 
 // 入站帧(JSON.parse 结果):群消息事件字段 + 心跳/echo 回执字段的并集,只声明用到的;
 // 回执 data 为各 OneBot API 的应答载荷,留给调用方自行窄化
-type InboundFrame = RawGroupMessageEvent &
-  RawGroupRequestEvent & {
-    meta_event_type?: string
-    interval?: number
-    echo?: string
-    retcode?: number
-    status?: string
-    message?: string
-    data?: unknown
-  }
+type InboundFrame = RawGroupMessageEvent & RawGroupRequestEvent & {
+  meta_event_type?: string
+  interval?: number
+  echo?: string
+  data?: unknown
+  retcode?: number
+  status?: string
+  message?: string
+}
+
+export interface OneBotApiResult {
+  ok: boolean
+  retcode?: number
+  message?: string
+}
+
+export interface QqLinkGuardOptions {
+  linkWhitelistEnabled?: boolean
+  linkWhitelist?: string[]
+  linkGuardExemptGroupIds?: number[]
+  botQQ?: number
+}
 
 /** 主动 ping 间隔 */
 export const PING_INTERVAL_MS = 30_000
@@ -39,28 +53,12 @@ export const MIN_LIVENESS_MS = 15_000
 /** 容忍连丢 2 个心跳 */
 export const HEARTBEAT_FACTOR = 3
 
-/** 带图群发的回执等待:NapCat 先上传图片再回执,多图时远超普通 8s */
-export const IMAGE_SEND_TIMEOUT_MS = 30_000
-
 /** 保活时间参数；仅单测覆盖，生产走常量 */
 export interface OneBotKeepaliveOpts {
   pingIntervalMs?: number
   livenessMs?: number
   minLivenessMs?: number
   heartbeatFactor?: number
-  linkWhitelistEnabled?: boolean
-  linkWhitelist?: string[]
-  /** 不做链接撤回的群(管理群):管理员在那里贴链接是正常工作 */
-  linkGuardExemptGroupIds?: number[]
-  botQQ?: number
-}
-
-export interface OneBotApiResult {
-  ok: boolean
-  retcode?: number
-  status?: string
-  data?: unknown
-  message?: string
 }
 
 export interface OneBotStats {
@@ -68,6 +66,10 @@ export interface OneBotStats {
   lastRxAt?: number
   /** 因静默判定而强制重连的累计次数 */
   staleReconnects: number
+  /** WS 错误、异常关闭和静默重连的累计次数（跨重连保留） */
+  connectionErrors?: number
+  /** 当前连接代的最后一个错误；成功 open 后清除 */
+  lastError?: string
 }
 
 /**
@@ -87,6 +89,9 @@ export class OneBotClient {
   private watchdog?: StaleWatchdog
   private lastRxAt?: number
   private staleReconnects = 0
+  private connectionErrors = 0
+  private lastError?: string
+  private readonly reportedSockets = new WeakSet<WebSocket>()
   /** 当前生效的静默 deadline;初始等于 livenessMs,heartbeat retune 后同步更新,仅供日志排查用 */
   private effectiveLivenessMs = 0
   private readonly pingIntervalMs: number
@@ -95,14 +100,14 @@ export class OneBotClient {
   private readonly heartbeatFactor: number
   private readonly linkWhitelistEnabled: boolean
   private readonly linkWhitelist: string[]
-  private readonly linkGuardExempt: Set<number>
+  private readonly linkGuardExemptGroupIds: Set<string>
   private readonly botQQ?: number
 
   constructor(
     private url: string,
     private accessToken?: string,
     private onStatus?: (connected: boolean) => void,
-    opts?: OneBotKeepaliveOpts
+    opts?: OneBotKeepaliveOpts & QqLinkGuardOptions
   ) {
     this.pingIntervalMs = opts?.pingIntervalMs ?? PING_INTERVAL_MS
     this.livenessMs = opts?.livenessMs ?? DEFAULT_LIVENESS_MS
@@ -110,7 +115,9 @@ export class OneBotClient {
     this.heartbeatFactor = opts?.heartbeatFactor ?? HEARTBEAT_FACTOR
     this.linkWhitelistEnabled = opts?.linkWhitelistEnabled === true
     this.linkWhitelist = opts?.linkWhitelist ?? []
-    this.linkGuardExempt = new Set(opts?.linkGuardExemptGroupIds ?? [])
+    this.linkGuardExemptGroupIds = new Set(
+      (opts?.linkGuardExemptGroupIds ?? []).map(String)
+    )
     this.botQQ = opts?.botQQ
   }
 
@@ -120,7 +127,12 @@ export class OneBotClient {
 
   /** 供 QqChannel.status() 拼 detail */
   stats(): OneBotStats {
-    return { lastRxAt: this.lastRxAt, staleReconnects: this.staleReconnects }
+    return {
+      lastRxAt: this.lastRxAt,
+      staleReconnects: this.staleReconnects,
+      connectionErrors: this.connectionErrors,
+      lastError: this.lastError,
+    }
   }
 
   start(): void {
@@ -143,16 +155,15 @@ export class OneBotClient {
 
   /**
    * 出站：发群消息。由 QqChannel / 单测直接调用。
-   * 未连接时丢弃（与历史行为一致），但记 warn —— 答案/兜底句无声消失
-   * 原本两侧(运维/用户)都不可见，先让运维侧看得见。
+   * 未连接或 WebSocket 写失败时 reject，由 registry/outbox 负责重试，避免静默丢失。
    */
-  send(a: ActionSend): void {
+  send(a: ActionSend): Promise<void> {
     if (this.ws?.readyState !== WebSocket.OPEN) {
       logger.warn(
         `[qq] send skipped: WS 未连接,丢弃出站消息 chat=${a.chatId} len=${a.text.length}`,
         { scope: "channel.qq.send", chatId: a.chatId }
       )
-      return
+      return Promise.reject(new Error("qq channel not connected"))
     }
     // 有 replyToId → 用消息段数组(reply + text),避免答案文本里的 [...] 被 CQ 误解析;
     // 无则保持纯字符串(向后兼容)。
@@ -163,12 +174,19 @@ export class OneBotClient {
             { type: "text", data: { text: a.text } },
           ]
         : a.text
-    this.ws.send(
-      JSON.stringify({
-        action: "send_group_msg",
-        params: { group_id: Number(a.chatId), message },
-      })
-    )
+    return new Promise((resolve, reject) => {
+      try {
+        this.ws!.send(
+          JSON.stringify({
+            action: "send_group_msg",
+            params: { group_id: Number(a.chatId), message },
+          }),
+          (err?: Error) => (err ? reject(err) : resolve())
+        )
+      } catch (e) {
+        reject(e)
+      }
+    })
   }
 
   private setConnected(v: boolean): void {
@@ -186,17 +204,22 @@ export class OneBotClient {
     this.ws = ws
 
     ws.on("open", () => {
+      if (this.stopped || this.ws !== ws) return
       this.backoff = 1000
+      // 连接恢复后清除当前错误；累计次数仍保留在 stats，便于看板发现抖动。
+      this.lastError = undefined
       this.setConnected(true)
       this.startKeepalive(ws)
     })
 
     // pong 与任何入站帧一样算「链路活着」，共用同一条 deadline
     ws.on("pong", () => {
+      if (this.stopped || this.ws !== ws) return
       this.watchdog?.touch()
     })
 
     ws.on("message", (raw: WebSocket.RawData) => {
+      if (this.stopped || this.ws !== ws) return
       // 收到任何帧就算活着(解析成不成功都算)
       this.lastRxAt = Date.now()
       this.watchdog?.touch()
@@ -236,49 +259,82 @@ export class OneBotClient {
       }
       const parsed = parseGroupMessage(evt)
       if (!parsed) return
-      if (
-        this.linkWhitelistEnabled &&
-        !this.linkGuardExempt.has(parsed.groupId) &&
-        (this.botQQ == null || this.botQQ <= 0 || parsed.userId !== this.botQQ)
-      ) {
-        const blocked = findBlockedLink(parsed.rawText, this.linkWhitelist)
-        if (blocked) {
-          if (Number.isFinite(parsed.messageId)) {
-            void this.deleteMessage(parsed.messageId)
-          } else {
-            logger.warn("[qq] 检测到不在白名单中的链接但缺少消息 ID", {
-              scope: "channel.qq.link-guard",
-              channel: "qq",
-              chatId: String(parsed.groupId),
+      if (this.shouldRetractLinks(parsed)) {
+        void this.callApi("delete_msg", { message_id: parsed.messageId }).catch(
+          (err) =>
+            logger.warn("[qq] 链接撤回失败", {
+              scope: "qq.link-whitelist",
+              raw: redactSensitive(err instanceof Error ? err.message : String(err)),
             })
-          }
-          logger.info(
-            Number.isFinite(parsed.messageId)
-              ? "[qq] 已撤回不在白名单中的链接"
-              : "[qq] 已拦截不在白名单中的链接",
-            {
-              scope: "channel.qq.link-guard",
-              channel: "qq",
-              chatId: String(parsed.groupId),
-            }
-          )
-          return
-        }
+        )
+        return
       }
       // 富化(回查引用/转发 + 下载图)后再 emit;失败兜底不阻断
       enrich(parsed, { call: (action, params) => this.call(action, params) })
-        .then((msg) => bus.emit("message.received", msg))
-        .catch((err) =>
-          bus.emit("error.occurred", { scope: "onebot.enrich", err })
-        )
+        .then((msg) => {
+          // stop/reconnect 期间旧 socket 的异步富化可能晚到；代际检查避免
+          // 把旧配置下的消息送进新 runtime，造成重复处理或错库写入。
+          if (!this.stopped && this.ws === ws) bus.emit("message.received", msg)
+        })
+        .catch((err) => {
+          if (this.stopped || this.ws !== ws) return
+          emitErrorSafely({
+            scope: "onebot.enrich",
+            err,
+            userVisible: false,
+          })
+        })
     })
 
-    ws.on("close", () => {
+    ws.on("close", (code: number, reason: Buffer) => {
+      if (this.ws !== ws) return
       this.stopKeepalive()
       this.setConnected(false)
+      if (!this.stopped && code !== 1000) {
+        this.reportConnectionError(
+          "qq.ws.close",
+          new Error(
+            `WebSocket abnormal close code=${code}${reason?.length ? ` reason=${reason.toString().slice(0, 200)}` : ""}`
+          ),
+          ws
+        )
+      }
+      // Mark this generation stale immediately. During reconnect backoff,
+      // async enrich work from the closed socket must not reach the bus.
+      this.ws = undefined
+      this.clearPending()
       this.scheduleReconnect()
     })
-    ws.on("error", () => ws.close())
+    ws.on("error", (err: Error) => {
+      this.reportConnectionError("qq.ws.error", err, ws)
+      // ws emits close after error; keep the existing reconnect path there.
+      try {
+        ws.close()
+      } catch {
+        /* socket already closed */
+      }
+    })
+  }
+
+  /** Record one active-socket failure; duplicate error/close events count once. */
+  private reportConnectionError(
+    scope: string,
+    err: unknown,
+    ws: WebSocket
+  ): void {
+    if (this.reportedSockets.has(ws) || this.stopped || this.ws !== ws) return
+    this.reportedSockets.add(ws)
+    const raw = err instanceof Error ? err.message : String(err)
+    const message = redactSensitive(raw).slice(0, 300)
+    this.lastError = message
+    this.connectionErrors++
+    logger.log("error", `[qq] ${scope}: ${message}`)
+    emitErrorSafely({
+      scope,
+      err,
+      channel: "qq",
+      userVisible: false,
+    })
   }
 
   private scheduleReconnect(): void {
@@ -298,9 +354,14 @@ export class OneBotClient {
     this.watchdog = new StaleWatchdog({
       onStale: () => {
         this.staleReconnects++
-        logger.log(
-          "warn",
-          `[qq] ${this.effectiveLivenessMs}ms 无入站帧,判定链路僵死,强制重连(累计 ${this.staleReconnects} 次)`
+        // 看门狗回调与同一 socket 的 close 事件共享 report 去重，避免一次
+        // terminate 被算成两次连接错误。
+        this.reportConnectionError(
+          "qq.stale",
+          new Error(
+            `${this.effectiveLivenessMs}ms 无入站帧,判定链路僵死,强制重连(累计 ${this.staleReconnects} 次)`
+          ),
+          ws
         )
         // 假死 socket 连关闭握手都发不出去,close() 会挂住,必须 terminate
         ws.terminate()
@@ -341,53 +402,24 @@ export class OneBotClient {
     )
   }
 
-  setGroupAddRequest(
-    flag: string,
-    approve: boolean,
-    reason?: string
-  ): Promise<OneBotApiResult> {
-    return this.callResult("set_group_add_request", {
-      flag,
-      sub_type: "add",
-      approve,
-      ...(reason ? { reason } : {}),
-    })
-  }
-
   sendGroupMessage(
     groupId: number,
     text: string,
     mentionAll = false,
     images: ImageInput[] = []
   ): Promise<OneBotApiResult> {
-    if (!mentionAll && images.length === 0) {
-      return this.callResult("send_group_msg", {
-        group_id: groupId,
-        message: text,
-      })
-    }
-    const message: Array<{ type: string; data: Record<string, string> }> = []
+    const message: Array<Record<string, unknown>> = []
     if (mentionAll) message.push({ type: "at", data: { qq: "all" } })
     if (text) {
       message.push({
         type: "text",
-        data: { text: mentionAll ? ` ${text}` : text },
+        data: { text: `${mentionAll ? " " : ""}${text}` },
       })
     }
-    // 图片走 base64:// 直传,不依赖原图 url(QQ 多媒体链接带 rkey 会过期)
-    for (const img of images) {
-      message.push({ type: "image", data: { file: `base64://${img.data}` } })
+    for (const image of images) {
+      message.push({ type: "image", data: { file: `base64://${image.data}` } })
     }
-    // 带图时 NapCat 要先上传再回执,默认 8s 容易误判失败(实际已发出)
-    return this.callResult(
-      "send_group_msg",
-      { group_id: groupId, message },
-      images.length ? IMAGE_SEND_TIMEOUT_MS : undefined
-    )
-  }
-
-  deleteMessage(messageId: number): Promise<OneBotApiResult> {
-    return this.callResult("delete_msg", { message_id: messageId })
+    return this.callApi("send_group_msg", { group_id: groupId, message })
   }
 
   setGroupNotice(
@@ -395,23 +427,55 @@ export class OneBotClient {
     content: string,
     pinned = false
   ): Promise<OneBotApiResult> {
-    // NapCat exposes group notices through its Go-CQHTTP extension action.
-    // Its schema expects the group id as a string and pinned as 0/1.
-    // 缺省不置顶:与管理面 /公告 指令、后台页面保持同一默认值
-    return this.callResult("_send_group_notice", {
+    return this.callApi("_send_group_notice", {
       group_id: String(groupId),
       content,
       pinned: pinned ? 1 : 0,
     })
   }
 
-  /** 全员禁言开/关(OneBot 标准 set_group_whole_ban);bot 须为该群管理员 */
-  setGroupWholeBan(groupId: number, enable: boolean): Promise<OneBotApiResult> {
-    // NapCat 的 schema 里 group_id 是 string(同 _send_group_notice),不能传 number
-    return this.callResult("set_group_whole_ban", {
+  setGroupWholeBan(
+    groupId: number,
+    enable: boolean
+  ): Promise<OneBotApiResult> {
+    return this.callApi("set_group_whole_ban", {
       group_id: String(groupId),
       enable,
     })
+  }
+
+  setGroupAddRequest(
+    flag: string,
+    approve: boolean,
+    reason?: string
+  ): Promise<OneBotApiResult> {
+    return this.callApi("set_group_add_request", {
+      flag,
+      sub_type: "add",
+      approve,
+      ...(reason ? { reason } : {}),
+    })
+  }
+
+  private async callApi(
+    action: string,
+    params: Record<string, unknown>
+  ): Promise<OneBotApiResult> {
+    const frame = (await this.callRaw(action, params)) as InboundFrame | undefined
+    if (!frame) return { ok: false, retcode: -1, message: "未收到 OneBot 回执" }
+    const retcode = Number(frame.retcode ?? 0)
+    return {
+      ok: retcode === 0 && frame.status !== "failed",
+      retcode,
+      ...(frame.message ? { message: frame.message } : {}),
+    }
+  }
+
+  private shouldRetractLinks(parsed: ParsedMessage): boolean {
+    if (!this.linkWhitelistEnabled) return false
+    if (this.linkGuardExemptGroupIds.has(String(parsed.groupId))) return false
+    if (this.botQQ != null && String(parsed.userId) === String(this.botQQ)) return false
+    return findBlockedLink(parsed.rawText, this.linkWhitelist) !== undefined
   }
 
   // 发 OneBot API 请求并等回执(echo 关联)。超时/未连接 → resolve undefined(降级不抛)。
@@ -420,38 +484,25 @@ export class OneBotClient {
     params: Record<string, unknown>,
     timeoutMs = 8000
   ): Promise<unknown> {
-    return this.callResult(action, params, timeoutMs).then((result) =>
-      result.ok ? result.data : undefined
+    return this.callRaw(action, params, timeoutMs).then(
+      (frame) => (frame as InboundFrame | undefined)?.data
     )
   }
 
-  private callResult(
+  private callRaw(
     action: string,
     params: Record<string, unknown>,
     timeoutMs = 8000
-  ): Promise<OneBotApiResult> {
-    if (this.ws?.readyState !== WebSocket.OPEN)
-      return Promise.resolve({ ok: false })
+  ): Promise<unknown> {
+    if (this.ws?.readyState !== WebSocket.OPEN) return Promise.resolve(undefined)
     const echo = `req_${++this.echoSeq}`
-    return new Promise<InboundFrame | undefined>((resolve) => {
+    return new Promise((resolve) => {
       const timer = setTimeout(() => {
         this.pending.delete(echo)
         resolve(undefined)
       }, timeoutMs)
       this.pending.set(echo, { resolve, timer })
       this.ws!.send(JSON.stringify({ action, params, echo }))
-    }).then((response) => {
-      if (!response) return { ok: false }
-      return {
-        ok:
-          response.retcode == null
-            ? response.status == null || response.status === "ok"
-            : response.retcode === 0,
-        retcode: response.retcode,
-        status: response.status,
-        data: response.data,
-        message: response.message,
-      }
     })
   }
 

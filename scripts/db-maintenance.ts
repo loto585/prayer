@@ -1,22 +1,182 @@
 import Database from "better-sqlite3"
 import * as sqliteVec from "sqlite-vec"
-import { resolve } from "node:path"
-import { backupDatabase, verifyDatabaseFile } from "../lib/db/backup.ts"
+import { chmod, copyFile, lstat, mkdtemp, rm, stat } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import {
+  backupDatabase,
+  checkDatabaseIntegrity,
+  verifyDatabaseFile,
+} from "../lib/core/db/backup.ts"
+import { openDb } from "../lib/core/db/index.ts"
+import { readUserVersion } from "../lib/core/db/migrations/index.ts"
+import { canonicalDbPath, databaseOpenPath } from "../lib/core/db/path.ts"
+import { Repo } from "../lib/core/db/repo.ts"
+import {
+  applyRetention,
+  applyTranscriptRetention,
+  DEFAULT_RETENTION_POLICY,
+  inspectRetention,
+  inspectTranscriptRetention,
+} from "../lib/core/db/retention.ts"
 
 function sourcePath(value?: string): string {
-  return resolve(value ?? process.env.DB_PATH ?? "./data/agent.db")
+  return canonicalDbPath(value ?? process.env.DB_PATH ?? "./data/agent.db")
 }
 
 function defaultBackupPath(source: string): string {
   const timestamp = new Date().toISOString().replaceAll(":", "-")
-  return `${source}.${timestamp}.bak`
+  return `${databaseOpenPath(source)}.${timestamp}.bak`
+}
+
+function flagValue(args: readonly string[], name: string): string | undefined {
+  const prefix = `--${name}=`
+  const inline = args.find((arg) => arg.startsWith(prefix))
+  if (inline) return inline.slice(prefix.length)
+  const index = args.indexOf(`--${name}`)
+  const value = index >= 0 ? args[index + 1] : undefined
+  return value && !value.startsWith("--") ? value : undefined
+}
+
+function parseNow(args: readonly string[]): number {
+  const value = flagValue(args, "now")
+  if (value == null) return Date.now()
+  const now = Number(value)
+  if (!Number.isFinite(now)) throw new Error("--now 必须是有限数字")
+  return now
+}
+
+function retentionPositionals(args: readonly string[]): string[] {
+  const out: string[] = []
+  for (let i = 1; i < args.length; i++) {
+    const arg = args[i]
+    if (arg === "--transcripts" || arg === "--now") {
+      const value = args[++i]
+      if (!value || value.startsWith("--")) throw new Error(`${arg} 需要一个值`)
+      continue
+    }
+    if (!arg.startsWith("--")) out.push(arg)
+  }
+  return out
+}
+
+function assertCompleteReport(
+  report: ReturnType<typeof inspectRetention>
+): void {
+  const missing = report.tables
+    .filter((row) => !row.available)
+    .map((row) => row.table)
+  if (missing.length) throw new Error(`数据库缺少保留表：${missing.join(", ")}`)
+}
+
+/**
+ * 供外部监控调用的只读快照。这里不能使用 openDb/getAppContext：它们会执行
+ * WAL 设置、迁移或配置 seed；调用者必须传入 readonly 打开的数据库。
+ */
+export function inspectDatabaseReport(db: Database.Database, now = Date.now()) {
+  const retention = inspectRetention(db, now, DEFAULT_RETENTION_POLICY)
+  const complete = retention.tables.every((table) => table.available)
+  return {
+    checkedAt: now,
+    integrity: checkDatabaseIntegrity(db),
+    retention,
+    // 部分库缺表时保留诊断而不是让 statusCounts 掩盖根因。
+    outbox: complete ? new Repo(db).outbox.statusCounts() : null,
+  }
+}
+
+/**
+ * 在临时副本上验证现有运行时能否打开一份备份。不会打开、写入或替换 DB_PATH，
+ * 也不会启动任何通道；临时副本总会在返回前删除。
+ */
+export async function runRestoreDrill(backupArg: string) {
+  if (!backupArg) throw new Error("恢复演练必须显式提供备份路径")
+
+  const backup = databaseOpenPath(canonicalDbPath(backupArg))
+  const runningDatabase = databaseOpenPath(sourcePath())
+  if (backup === ":memory:") throw new Error("恢复演练不能使用内存数据库")
+  if (backup === runningDatabase) {
+    throw new Error("恢复演练只能读取备份文件，不能把正在运行的数据库作为输入")
+  }
+
+  const backupInfo = await lstat(backup)
+  if (!backupInfo.isFile() || backupInfo.isSymbolicLink()) {
+    throw new Error("恢复演练输入必须是普通备份文件，不能是符号链接")
+  }
+  const backupIntegrity = verifyDatabaseFile(backup)
+  if (!backupIntegrity.ok) {
+    throw new Error(
+      `备份完整性检查失败：${backupIntegrity.messages.join("；")}`
+    )
+  }
+
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "prayer-restore-drill-")
+  )
+  const restoredPath = join(temporaryDirectory, "agent.db")
+  try {
+    await chmod(temporaryDirectory, 0o700)
+    await copyFile(backup, restoredPath)
+    await chmod(restoredPath, 0o600)
+
+    const backupBytes = (await stat(backup)).size
+    const restoredBytes = (await stat(restoredPath)).size
+    if (backupBytes !== restoredBytes) {
+      throw new Error("恢复副本大小与备份不一致")
+    }
+
+    // 迁移、repair 和 WAL 只会写入即将删除的副本；这是当前应用层可打开性的证明。
+    const restored = openDb(restoredPath)
+    let restoredSchemaVersion: number
+    try {
+      restoredSchemaVersion = readUserVersion(restored)
+    } finally {
+      restored.close()
+    }
+
+    const restoredIntegrity = verifyDatabaseFile(restoredPath)
+    if (!restoredIntegrity.ok) {
+      throw new Error(
+        `恢复副本完整性检查失败：${restoredIntegrity.messages.join("；")}`
+      )
+    }
+
+    const reportDb = new Database(databaseOpenPath(restoredPath), {
+      fileMustExist: true,
+      readonly: true,
+    })
+    try {
+      sqliteVec.load(reportDb)
+      const report = inspectDatabaseReport(reportDb)
+      const ready =
+        report.integrity.ok &&
+        report.retention.tables.every((table) => table.available)
+      if (!ready) {
+        throw new Error("恢复副本未通过当前数据库就绪检查")
+      }
+      return {
+        ok: true,
+        backup,
+        copy: { backupBytes, restoredBytes },
+        restoredSchemaVersion,
+        report,
+        temporaryCopyRemoved: true,
+      }
+    } finally {
+      reportDb.close()
+    }
+  } finally {
+    // 清理失败必须让演练失败，避免把含业务数据的临时副本悄然留在磁盘上。
+    await rm(temporaryDirectory, { recursive: true, force: true })
+  }
 }
 
 async function main(): Promise<void> {
-  const [command, sourceArg, destinationArg] = process.argv.slice(2)
-  const source = sourcePath(sourceArg)
+  const args = process.argv.slice(2)
+  const [command, sourceArg, destinationArg] = args
 
   if (command === "check") {
+    const source = sourcePath(sourceArg)
     const result = verifyDatabaseFile(source)
     if (!result.ok) {
       throw new Error(`数据库完整性检查失败：${result.messages.join("；")}`)
@@ -25,8 +185,47 @@ async function main(): Promise<void> {
     return
   }
 
+  if (command === "report") {
+    const positional = retentionPositionals(args)
+    const dbPath = sourcePath(positional[0])
+    // 报告命令刻意不走 openDb：不得触发迁移/WAL 设置，也不得创建备份或删除数据。
+    const db = new Database(databaseOpenPath(dbPath), {
+      fileMustExist: true,
+      readonly: true,
+    })
+    try {
+      sqliteVec.load(db)
+      const report = inspectDatabaseReport(db, parseNow(args))
+      const schemaComplete = report.retention.tables.every(
+        (table) => table.available
+      )
+      const ok = report.integrity.ok && schemaComplete
+      console.log(
+        JSON.stringify(
+          {
+            ok,
+            source: dbPath,
+            ...report,
+          },
+          null,
+          2
+        )
+      )
+      // 保留候选是人工确认的正常运营信号，不把它误报为失败。
+      if (!ok) process.exitCode = 1
+    } finally {
+      db.close()
+    }
+    return
+  }
+
   if (command === "backup") {
-    const db = new Database(source, { fileMustExist: true })
+    const source = sourcePath(sourceArg)
+    // 在线备份 API 只需读取源库；只读句柄避免维护命令改写运行中的 DB_PATH。
+    const db = new Database(databaseOpenPath(source), {
+      fileMustExist: true,
+      readonly: true,
+    })
     try {
       sqliteVec.load(db)
       const result = await backupDatabase(
@@ -42,12 +241,86 @@ async function main(): Promise<void> {
     return
   }
 
+  if (command === "restore-drill") {
+    if (!sourceArg || destinationArg) {
+      throw new Error("用法：pnpm db:restore-drill <已验证的备份路径>")
+    }
+    const result = await runRestoreDrill(sourceArg)
+    console.log(JSON.stringify(result, null, 2))
+    return
+  }
+
+  if (command === "retention") {
+    const positional = retentionPositionals(args)
+    const dbPath = sourcePath(positional[0])
+    const apply = args.includes("--apply")
+    const deleteTranscripts = args.includes("--delete-transcripts")
+    const transcriptRoot = flagValue(args, "transcripts")
+    if (deleteTranscripts && !apply)
+      throw new Error("删除 transcript 必须同时显式传入 --apply")
+    if (deleteTranscripts && !transcriptRoot)
+      throw new Error(
+        "--delete-transcripts 需要 --transcripts=/path/to/projects"
+      )
+
+    const now = parseNow(args)
+    // Dry-run must not even open a writable handle; this keeps the default
+    // report safe while the service is still running.
+    const db = new Database(databaseOpenPath(dbPath), {
+      fileMustExist: true,
+      readonly: !apply,
+    })
+    try {
+      sqliteVec.load(db)
+      const before = inspectRetention(db, now, DEFAULT_RETENTION_POLICY)
+      assertCompleteReport(before)
+      const transcriptBefore = transcriptRoot
+        ? inspectTranscriptRetention(
+            transcriptRoot,
+            now,
+            DEFAULT_RETENTION_POLICY.transcriptsDays
+          )
+        : undefined
+      if (deleteTranscripts && !transcriptBefore?.available)
+        throw new Error("transcript 根目录不存在或不可读，已拒绝删除")
+
+      const database = apply
+        ? applyRetention(db, now, DEFAULT_RETENTION_POLICY)
+        : undefined
+      const transcripts = deleteTranscripts
+        ? applyTranscriptRetention(
+            transcriptRoot!,
+            now,
+            DEFAULT_RETENTION_POLICY.transcriptsDays
+          )
+        : undefined
+      console.log(
+        JSON.stringify(
+          {
+            apply,
+            source: dbPath,
+            policy: DEFAULT_RETENTION_POLICY,
+            database: database ?? { before },
+            transcripts: transcripts ?? transcriptBefore ?? null,
+          },
+          null,
+          2
+        )
+      )
+    } finally {
+      db.close()
+    }
+    return
+  }
+
   throw new Error(
-    "用法：pnpm db:check [数据库路径]；pnpm db:backup [数据库路径] [备份路径]"
+    "用法：pnpm db:check [数据库路径]；pnpm db:report [数据库路径]；pnpm db:backup [数据库路径] [备份路径]；pnpm db:restore-drill <备份路径>；pnpm db:retention [数据库路径] [--apply] [--transcripts=/path/to/projects --delete-transcripts]"
   )
 }
 
-main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : String(error))
-  process.exitCode = 1
-})
+if (process.argv[1]?.endsWith("db-maintenance.ts")) {
+  main().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : String(error))
+    process.exitCode = 1
+  })
+}

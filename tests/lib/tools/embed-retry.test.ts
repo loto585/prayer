@@ -5,7 +5,7 @@ vi.mock("@huggingface/transformers", () => ({ env: {}, pipeline }))
 
 describe("embed 加载失败", () => {
   it("失败不缓存,下次调用重新加载", async () => {
-    const { embed } = await import("@/lib/tools/embed")
+    const { embed } = await import("@/lib/model/embed")
     pipeline.mockRejectedValueOnce(new TypeError("fetch failed"))
     await expect(embed("a")).rejects.toThrow("fetch failed")
 

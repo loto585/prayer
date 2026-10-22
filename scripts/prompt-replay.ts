@@ -1,0 +1,952 @@
+/**
+ * system prompt 离线回放:同一批历史问题 × 多个 prompt 变体,产出对比报告。
+ *
+ * dev-only 工具,不进运行时。只读 DB(不写库)、不落任何凭据。
+ *
+ * 为什么需要沙箱 CLAUDE_CONFIG_DIR:
+ *   生产 config 目录里有 caveman SessionStart hook 与 codegraph UserPromptSubmit hook,
+ *   会给会话注入风格规则与仓库源码,污染对比结果。沙箱只保留会影响模型行为的
+ *   allowlist 设置项、extraKnownMarketplaces 与业务插件,去掉全部 hooks;
+ *   凭据只经 Options.env 进程内传递。
+ *
+ * 预算与生产对齐:maxTurns 与单题超时照抄 lib/conversation/agent.ts 的主客服路径。
+ *   预算偏小会截断「有没有调工具」这个被测指标本身,系统性偏袒本来就不爱调工具的变体。
+ *
+ * 用法:
+ *   pnpm prompt:replay --limit 3 --variants old,clite          # 冒烟
+ *   pnpm prompt:replay --limit 20 --variants old,clite,a       # 正式对比
+ *   pnpm prompt:replay --variants clite --dry-run              # 只打印渲染后的正文
+ *
+ * 变体文本默认取自 scripts/fixtures/prompt-replay/(已跟踪,见该目录 README);
+ * 换用别处的文本目录传 --variants-dir <path>。
+ */
+import { execFileSync } from "node:child_process"
+import { createHash } from "node:crypto"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { join, resolve } from "node:path"
+import { register } from "node:module"
+import Database from "better-sqlite3"
+import * as sqliteVec from "sqlite-vec"
+import { query as sdkQuery, type Options } from "@anthropic-ai/claude-agent-sdk"
+// 纯类型导入在擦除后不留运行时说明符,不受下方模块解析限制
+import type { AssistantTextState } from "../lib/model/final-text.ts"
+import type { Repo } from "../lib/core/db/repo.ts"
+
+/**
+ * Node 原生 TS 运行时垫片。
+ *
+ * 本仓库 tsconfig 用 moduleResolution: "bundler",lib/** 内部大量使用无扩展名相对
+ * 导入(如 `../core/brand`、`./prompt`)。`node --experimental-transform-types` 只做
+ * 类型擦除、不做模块解析,这些说明符会直接 ERR_MODULE_NOT_FOUND。这里注册一个
+ * resolve 钩子为无扩展名相对说明符补 `.ts` / `/index.ts`,让本脚本能以单文件跑在
+ * 原生 Node 上,不额外引入 tsx / ts-node 依赖。
+ */
+const RESOLVE_HOOK = `
+export async function resolve(specifier, context, nextResolve) {
+  if (!specifier.startsWith(".") && !specifier.startsWith("/")) {
+    return nextResolve(specifier, context)
+  }
+  try {
+    return await nextResolve(specifier, context)
+  } catch (error) {
+    for (const candidate of [specifier + ".ts", specifier + "/index.ts"]) {
+      try {
+        return await nextResolve(candidate, context)
+      } catch {}
+    }
+    throw error
+  }
+}
+`
+register(`data:text/javascript,${encodeURIComponent(RESOLVE_HOOK)}`)
+
+// 钩子必须先于这些导入注册,故一律用动态导入(静态导入会在钩子生效前解析)
+const { resolveBrand } = await import("../lib/core/brand.ts")
+const { databaseOpenPath } = await import("../lib/core/db/path.ts")
+const { Repo: RepoClass } = await import("../lib/core/db/repo.ts")
+const { embed } = await import("../lib/model/embed.ts")
+const { sdkEnv } = await import("../lib/model/sdk-env.ts")
+const { buildDefaultSystem } = await import("../lib/model/system-prompt.ts")
+const { agentQueryOptions } = await import("../lib/model/query-options.ts")
+const { sanitizeForModel } = await import("../lib/model/sanitize-input.ts")
+const { DEFAULT_RUN_TIMEOUT_MS } = await import("../lib/conversation/agent.ts")
+const {
+  buildPrompt,
+  KB_CANDIDATES_BEGIN,
+  KB_CANDIDATES_END,
+  USER_MESSAGE_BEGIN,
+  USER_MESSAGE_END,
+} = await import("../lib/model/prompt.ts")
+const {
+  formatKbBlock,
+  DEFAULT_KB_PREFETCH_MAX_CHARS,
+  DEFAULT_KB_PREFETCH_MAX_DISTANCE,
+  DEFAULT_KB_PREFETCH_TOP_K,
+} = await import("../lib/knowledge/kb-prefetch.ts")
+const { consumeAssistantContent, finalAssistantText } =
+  await import("../lib/model/final-text.ts")
+const { isToolAllowed, denyMessage } =
+  await import("../lib/model/tool-policy.ts")
+
+const PROD_CONFIG_DIR = resolve("./data/claude-config")
+const ARTIFACT_DIR = resolve(".kb-artifacts/prompt-replay")
+const SANDBOX_CONFIG_DIR = join(ARTIFACT_DIR, "claude-config")
+/**
+ * 历史/对照变体文本的默认目录。已跟踪的 fixture(见该目录 README),不是 .kb-artifacts
+ * 里的临时产物 —— 基准文本必须随仓库走,否则回放报告无法复现。
+ */
+const DEFAULT_VARIANTS_DIR = resolve("scripts/fixtures/prompt-replay")
+/** 允许回放的插件:只用业务插件,排除 caveman 等风格插件 */
+const KEEP_PLUGINS = ["packyapi@prayer-local", "cs@prayer-local"]
+/**
+ * 沙箱按 allowlist 保留的生产设置项。只放影响模型行为的键:hooks / skills /
+ * statusLine 之类一律不带(它们会污染或干扰回放)。
+ */
+const SANDBOX_SETTING_KEYS = [
+  "alwaysThinkingEnabled",
+  "language",
+  "model",
+] as const
+/** 与 agent.ts run() 的 maxTurns 对齐(该值是字面量,无处可导入) */
+const MAX_TURNS = 20
+/** 单题超时:直接复用主客服路径的常量,避免两处漂移 */
+const RUN_TIMEOUT_MS = DEFAULT_RUN_TIMEOUT_MS
+/** 样本取数口径:与报告头写的是同一组常量 */
+const MIN_QUESTION_CHARS = 8
+const MAX_QUESTION_CHARS = 200
+/** 报告里单条文本(错误串 / 片段)的落盘上限 */
+const MAX_ERROR_CHARS = 300
+const MAX_KB_PREVIEW_CHARS = 200
+
+/** 用法错误:打印用法后 exit 1,不产生任何副作用 */
+class UsageError extends Error {}
+
+const USAGE = `用法:
+  pnpm prompt:replay --limit 3 --variants old,clite           冒烟
+  pnpm prompt:replay --limit 20 --variants old,clite,a        正式对比
+  pnpm prompt:replay --variants clite --dry-run               只渲染并打印,不调用模型
+
+  --limit <n>        正整数,默认 20
+  --seed <int>       抽样种子,默认 1;按 md5("<seed>:<id>") 升序取前 N 条,
+                     库增长时样本多数不变(详见报告头)
+  --ids <a,b,c>      显式钉住题目 id(按给定顺序),忽略 --seed 与 --limit
+  --variants <a,b>   逗号分隔;clite = 当前 buildDefaultSystem,其余读
+                     <variants-dir>/<name>.txt,默认 old,clite
+  --variants-dir <p> 变体文本目录,默认 scripts/fixtures/prompt-replay
+  --dry-run          只渲染并打印,不调用模型`
+
+interface Args {
+  limit: number
+  seed: number
+  /** 显式钉住的题目 id;null = 按 seed 抽样 */
+  ids: number[] | null
+  variants: string[]
+  variantsDir: string
+  dryRun: boolean
+}
+
+/**
+ * 严格逐 token 解析:任何不认识、或把「标志 + 取值」挤成一个 token 的参数都当场报错。
+ * 宽松匹配(在 argv 里 indexOf("--limit"))会让 `--limit 0` 被引号包成一个 token 时
+ * 静默失效、退回默认 20 题 —— 对要烧真实 API 额度的回放来说是不可接受的静默降级。
+ */
+const VALUE_FLAGS = [
+  "limit",
+  "seed",
+  "ids",
+  "variants",
+  "variants-dir",
+] as const
+
+function parseArgs(argv: string[]): Args {
+  const values = new Map<string, string>()
+  let dryRun = false
+  for (let i = 0; i < argv.length; i += 1) {
+    const token = argv[i]
+    const name = token.startsWith("--") ? token.slice(2) : ""
+    if (name === "dry-run") {
+      dryRun = true
+      continue
+    }
+    if (!(VALUE_FLAGS as readonly string[]).includes(name)) {
+      throw new UsageError(`未知参数: ${JSON.stringify(token)}`)
+    }
+    const value = argv[i + 1]
+    if (value === undefined || value.startsWith("--")) {
+      throw new UsageError(`--${name} 缺少取值`)
+    }
+    values.set(name, value)
+    i += 1
+  }
+  const limitRaw = values.get("limit")
+  const limit = Number(limitRaw ?? 20)
+  if (!Number.isInteger(limit) || limit < 1) {
+    throw new UsageError(
+      `--limit 必须是正整数,收到 ${JSON.stringify(limitRaw ?? "")}`
+    )
+  }
+  const seedRaw = values.get("seed")
+  const seed = Number(seedRaw ?? 1)
+  if (!Number.isInteger(seed)) {
+    throw new UsageError(
+      `--seed 必须是整数,收到 ${JSON.stringify(seedRaw ?? "")}`
+    )
+  }
+  const idsRaw = values.get("ids")
+  let ids: number[] | null = null
+  if (idsRaw !== undefined) {
+    const parts = idsRaw.split(",").map((v) => v.trim())
+    if (!parts.length || parts.some((p) => !/^\d+$/.test(p))) {
+      throw new UsageError(
+        `--ids 必须是逗号分隔的正整数 id,收到 ${JSON.stringify(idsRaw)}`
+      )
+    }
+    ids = parts.map(Number)
+  }
+  const variants = (values.get("variants") ?? "old,clite")
+    .split(",")
+    .map((v) => v.trim())
+    .filter(Boolean)
+  if (!variants.length) throw new UsageError("--variants 不能为空")
+  return {
+    limit,
+    seed,
+    ids,
+    variants,
+    variantsDir: resolve(values.get("variants-dir") ?? DEFAULT_VARIANTS_DIR),
+    dryRun,
+  }
+}
+
+/**
+ * 先把变体文本读进来(不渲染):此步不碰 DB / 网络,未知变体名当场 fail loud,
+ * 保证错用法不会留下半份报告。
+ */
+function readVariantTemplates(args: Args): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const name of args.variants) {
+    // clite 由 buildDefaultSystem 现场渲染,不需要模板文件
+    if (name === "clite") continue
+    const file = join(args.variantsDir, `${name}.txt`)
+    if (!existsSync(file)) {
+      throw new UsageError(
+        `未知变体 ${name}:找不到 ${file}\n可用变体:clite,或 ${args.variantsDir} 下的 <name>.txt`
+      )
+    }
+    out.set(name, readFileSync(file, "utf8"))
+  }
+  return out
+}
+
+/**
+ * 读取生产 config 的 env / marketplaces / enabledPlugins / 行为开关,不落盘、不打印。
+ * 业务插件必须全部在场:缺任何一个都会让工具白名单与生产不一致,回放测的就不是同一个东西。
+ */
+function readProdSettings(): {
+  env: Record<string, string>
+  marketplaces: Record<string, unknown>
+  plugins: Record<string, boolean>
+  settings: Record<string, unknown>
+} {
+  const raw = JSON.parse(
+    readFileSync(join(PROD_CONFIG_DIR, "settings.json"), "utf8")
+  ) as Record<string, unknown> & {
+    env?: Record<string, string>
+    extraKnownMarketplaces?: Record<string, unknown>
+    enabledPlugins?: Record<string, boolean>
+  }
+  const plugins: Record<string, boolean> = {}
+  const keepMarketplaces = new Set<string>()
+  const missing: string[] = []
+  for (const name of KEEP_PLUGINS) {
+    if (!raw.enabledPlugins?.[name]) {
+      missing.push(name)
+      continue
+    }
+    plugins[name] = true
+    // 插件全名 <plugin>@<marketplace>,据此只带业务插件所属的 marketplace。
+    // 原样照搬会把 caveman(github 源)一起带进沙箱 —— 它既被排除,又会引入
+    // 网络依赖,让回放结果不可复现。
+    const at = name.indexOf("@")
+    if (at > 0) keepMarketplaces.add(name.slice(at + 1))
+  }
+  if (missing.length) {
+    throw new Error(
+      `生产 settings.json 未启用回放所需的业务插件: ${missing.join(", ")}\n` +
+        `回放要求插件集合与生产一致,否则工具是否可用与被测行为都不对。`
+    )
+  }
+  const marketplaces: Record<string, unknown> = {}
+  for (const [name, value] of Object.entries(
+    raw.extraKnownMarketplaces ?? {}
+  )) {
+    if (keepMarketplaces.has(name)) marketplaces[name] = value
+  }
+  const settings: Record<string, unknown> = {}
+  for (const key of SANDBOX_SETTING_KEYS) {
+    if (raw[key] !== undefined) settings[key] = raw[key]
+  }
+  return { env: raw.env ?? {}, marketplaces, plugins, settings }
+}
+
+/**
+ * 生成无 hooks 沙箱配置。刻意不含 env:凭据只在进程内存里经 Options.env 传给 CLI,
+ * 绝不写进这个文件。permissions 也显式钉 default,不继承生产的 bypassPermissions
+ * (生产那样会让 canUseTool 白名单形同虚设)。
+ */
+function writeSandboxConfig(
+  marketplaces: Record<string, unknown>,
+  plugins: Record<string, boolean>,
+  settings: Record<string, unknown>
+): void {
+  mkdirSync(SANDBOX_CONFIG_DIR, { recursive: true })
+  writeFileSync(
+    join(SANDBOX_CONFIG_DIR, "settings.json"),
+    JSON.stringify(
+      {
+        ...settings,
+        extraKnownMarketplaces: marketplaces,
+        enabledPlugins: plugins,
+        permissions: { defaultMode: "default" },
+      },
+      null,
+      2
+    ),
+    "utf8"
+  )
+}
+
+function renderVariant(
+  text: string,
+  brand: { name: string; description: string },
+  supportUrl: string
+): string {
+  const hint = supportUrl
+    ? `这类事务可引导用户访问 ${supportUrl} 自助查看或办理,或在本群 @我 后发送「人工」转接群管。`
+    : "这类事务无法由自动客服办理,应如实说明并引导用户在本群 @我 后发送「人工」联系群管。"
+  return text
+    .split("${BRAND}")
+    .join(brand.name)
+    .split("${DESC}")
+    .join(brand.description)
+    .split("${HINT}")
+    .join(hint)
+    .split("${KB_CANDIDATES_BEGIN}")
+    .join(KB_CANDIDATES_BEGIN)
+    .split("${KB_CANDIDATES_END}")
+    .join(KB_CANDIDATES_END)
+    .split("${USER_MESSAGE_BEGIN}")
+    .join(USER_MESSAGE_BEGIN)
+    .split("${USER_MESSAGE_END}")
+    .join(USER_MESSAGE_END)
+}
+
+function sha256(text: string): string {
+  return createHash("sha256").update(text).digest("hex")
+}
+
+/** 供报告写 provenance:提交 SHA 与是否干净 */
+function gitProvenance(): string {
+  try {
+    const sha = execFileSync("git", ["rev-parse", "HEAD"], {
+      encoding: "utf8",
+    }).trim()
+    const dirty = execFileSync("git", ["status", "--porcelain"], {
+      encoding: "utf8",
+    }).trim()
+    return dirty ? `${sha}(工作区有未提交改动)` : sha
+  } catch {
+    return "unknown(非 git 工作区)"
+  }
+}
+
+/**
+ * 落盘前脱敏。relay 可能把凭据回显进错误串或模型正文(用户也可能把 token 贴进问题),
+ * 报告是磁盘产物,不能持久化凭据。中文不受影响(不在 token 字符集里)。
+ *
+ * 两档规则,精度不同:
+ * - 高精度:形态本身就是凭据(sk- 前缀、Bearer),任何位置都替换;
+ * - 低精度:32+ 无分隔长串。它同时会命中 `<MODEL_ID_FROM_CURRENT_PLAZA>` 这类
+ *   占位符,而占位符正是判读要看的内容,故对「被 <> 或反引号包裹的串」整段豁免,
+ *   只对普通正文生效。豁免只针对低精度规则:被反引号包住的真 token 仍由 sk- 规则拦下。
+ */
+const CREDENTIAL_PATTERNS: readonly RegExp[] = [
+  /sk-[A-Za-z0-9_-]{8,}/g,
+  /Bearer\s+[A-Za-z0-9._~+/=-]{8,}/gi,
+]
+const LONG_RUN = /[A-Za-z0-9_-]{32,}/g
+/** 豁免段:`<...>` 或反引号包裹的串,整体不适用长串规则 */
+const PROTECTED_SPAN = /<[^<>\n]*>|`[^`\n]*`/g
+
+/** 只在保护段之外替换长串 */
+function redactLongRuns(text: string): string {
+  let out = ""
+  let last = 0
+  for (const m of text.matchAll(PROTECTED_SPAN)) {
+    out += text.slice(last, m.index).replace(LONG_RUN, "<redacted>")
+    out += m[0]
+    last = m.index + m[0].length
+  }
+  return out + text.slice(last).replace(LONG_RUN, "<redacted>")
+}
+
+const REDACTED = "<redacted>"
+
+/**
+ * 截断。脱敏把长串压成标记后再截,截点可能正好落在标记内部,留下 `<redacte`
+ * 这种半截标记 —— 判读的人会以为报告坏了。落在标记内部就把它补全。
+ */
+function truncateAfterRedaction(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text
+  const cut = text.slice(0, maxChars)
+  const start = cut.lastIndexOf("<")
+  if (start < 0) return cut
+  const tail = cut.slice(start)
+  return tail.length >= 2 && REDACTED.startsWith(tail)
+    ? cut.slice(0, start) + REDACTED
+    : cut
+}
+
+/**
+ * 顺序是「先脱敏、后截断」——反过来的话,跨截断边界的凭据会留下碎片
+ * (实测尾部残留 `sk-BB`),而碎片的形态恰好逃过所有凭据规则。
+ */
+function redactForReport(value: string, maxChars = MAX_ERROR_CHARS): string {
+  let out = redactLongRuns(value)
+  for (const re of CREDENTIAL_PATTERNS) out = out.replace(re, REDACTED)
+  return truncateAfterRedaction(out, maxChars)
+}
+
+interface QuestionRow {
+  id: number
+  question: string
+}
+
+interface QuestionSample {
+  /** 库内问题总行数(过滤前) */
+  total: number
+  /** 通过长度过滤的条数(ids 模式下为库内总候选数,仅作参考) */
+  eligible: number
+  picked: QuestionRow[]
+  /** 抽样方式,写进报告头以便核对两轮是否同一批题 */
+  mode: "seed" | "ids"
+  seed: number
+}
+
+function md5(text: string): string {
+  return createHash("md5").update(text).digest("hex")
+}
+
+/**
+ * 取样。
+ *
+ * `--seed` 模式:按 `md5("<seed>:<id>")` 升序取前 limit 条。旧实现是
+ * `floor(eligible/limit)` 等距取索引 —— 库一长(3240→3273 行)步长就从 149 变 151,
+ * 20 题里 19 题整体错位,跨轮聚合再也对不上。改成按 id 哈希排名后,新增行只有在
+ * 哈希排名挤进前 N 时才会改变样本,多数情况下跨轮稳定;同 seed 同库完全可复现。
+ * (哈希排序不是"永久不变"的保证:库里新增行仍可能挤进前 N —— 这是它的固有性质。)
+ *
+ * `--ids` 模式:按给定顺序原样取,不套长度过滤(调用方已显式点名,静默丢弃更糟)。
+ */
+function sampleQuestions(repo: Repo, args: Args): QuestionSample {
+  const all = repo.proactive.listQuestions()
+  const byId = new Map(all.map((r) => [r.id, r]))
+  const eligible = all.filter(
+    (r) =>
+      r.question.length >= MIN_QUESTION_CHARS &&
+      r.question.length <= MAX_QUESTION_CHARS
+  )
+
+  if (args.ids) {
+    const missing = args.ids.filter((id) => !byId.has(id))
+    if (missing.length) {
+      throw new UsageError(
+        `--ids 里有 ${missing.length} 个 id 不在库中: ${missing.join(", ")}` +
+          `\n(库内问题 id 范围 ${all[0]?.id ?? "-"}~${all[all.length - 1]?.id ?? "-"},共 ${all.length} 行)`
+      )
+    }
+    return {
+      total: all.length,
+      eligible: eligible.length,
+      picked: args.ids.map((id) => byId.get(id)!),
+      mode: "ids",
+      seed: args.seed,
+    }
+  }
+
+  const picked =
+    eligible.length <= args.limit
+      ? eligible
+      : eligible
+          .map((row) => ({ row, rank: md5(`${args.seed}:${row.id}`) }))
+          // 同哈希时按 id 兜底,保证排序是全序、结果唯一
+          .sort((a, b) =>
+            a.rank < b.rank ? -1 : a.rank > b.rank ? 1 : a.row.id - b.row.id
+          )
+          .slice(0, args.limit)
+          .map((x) => x.row)
+  return {
+    total: all.length,
+    eligible: eligible.length,
+    picked,
+    mode: "seed",
+    seed: args.seed,
+  }
+}
+
+/** KB top-1 距离分桶阈值:≤ 记为「有据可依」,> 或无命中记为「无据需兜底」 */
+const KB_BUCKET_THRESHOLD = 0.8
+
+interface PreparedQuestion {
+  /** proactive_replies.id:报告里带出来,便于两轮人工核对是否同一批题 */
+  id: number
+  question: string
+  /** 已按 maxDistance 过滤的候选,searchKb 已 ORDER BY distance(近→远) */
+  hits: { distance: number; content: string }[]
+  kbBlock: string
+  /** 检索失败的原因;失败时退化为不注入候选,该题照跑 */
+  error?: string
+}
+
+/**
+ * 先把全部样本的 KB 候选算出来(本地嵌入,不烧 API),再写报告头 ——
+ * 头部要给出本次样本的分桶摘要,判读时才知道哪几题本身就没有依据可用。
+ */
+async function prepareQuestions(
+  repo: Repo,
+  rows: QuestionRow[],
+  topK: number,
+  maxDistance: number
+): Promise<PreparedQuestion[]> {
+  const out: PreparedQuestion[] = []
+  for (const { id, question } of rows) {
+    try {
+      const vec = await embed(question)
+      const hits = repo
+        .searchKb(vec, topK)
+        .filter((h) => h.distance <= maxDistance)
+      // 与 makeKbPrefetch 对齐:先清洗再截断(预检索每轮注入,不清洗可能整请求 500)
+      const contents = hits.map((h) =>
+        sanitizeForModel(h.content).slice(0, DEFAULT_KB_PREFETCH_MAX_CHARS)
+      )
+      out.push({
+        id,
+        question,
+        hits,
+        kbBlock: formatKbBlock(contents.map((content) => ({ content }))),
+      })
+    } catch (e) {
+      // 单题检索失败不该毁掉整轮回放:记下来,该题退回纯工具路径继续跑
+      out.push({
+        id,
+        question,
+        hits: [],
+        kbBlock: "",
+        error: e instanceof Error ? e.message : String(e),
+      })
+    }
+  }
+  return out
+}
+
+/** 本次样本按 KB top-1 距离分桶,写进报告头供判读直接分组 */
+function bucketSummary(prepared: PreparedQuestion[]): string {
+  let grounded = 0
+  let weak = 0
+  let none = 0
+  for (const p of prepared) {
+    const top1 = p.hits[0]?.distance
+    if (top1 === undefined) none += 1
+    else if (top1 <= KB_BUCKET_THRESHOLD) grounded += 1
+    else weak += 1
+  }
+  return `≤${KB_BUCKET_THRESHOLD} 有据可依 ${grounded} 题;>${KB_BUCKET_THRESHOLD} 弱相关 ${weak} 题;无命中 ${none} 题`
+}
+
+interface ToolRecord {
+  name: string
+  decision: "allow" | "deny"
+  count: number
+}
+
+interface RunResult {
+  text: string
+  tools: ToolRecord[]
+  /** 模型消息里观察到、但没经过 canUseTool 的调用(正常应为空) */
+  undecided: UndecidedTool[]
+  error?: string
+}
+
+/**
+ * 未经判定的调用。带上 tool_result 原文作证据:光有工具名只能看出「名字不对」,
+ * 无法定性是模型拼错名(CLI 判未知工具)还是权限被绕过 —— 报告里必须能回答这个。
+ */
+interface UndecidedTool {
+  name: string
+  toolUseId: string
+  /** CLI 对该 tool_use 的应答;没等到结果则为 undefined */
+  result?: { isError: boolean; content: string }
+}
+
+/**
+ * 工具记录以 canUseTool 为唯一真源:被拒的调用也是「调用了」,不能只记消息里出现的
+ * tool_use —— 那会把「尝试越界但被拦」记成干净,直接翻转「越界泄密」的判定。
+ * 消息侧只用来兜底核对有没有漏过判定的调用。
+ */
+function bumpTool(
+  records: ToolRecord[],
+  name: string,
+  decision: ToolRecord["decision"]
+): void {
+  if (!name) return
+  const hit = records.find((r) => r.name === name && r.decision === decision)
+  if (hit) hit.count += 1
+  else records.push({ name, decision, count: 1 })
+}
+
+/** tool_result 的 content 是 string 或 block 数组,统一压成纯文本 */
+function toolResultText(content: unknown): string {
+  if (typeof content === "string") return content
+  if (!Array.isArray(content)) return ""
+  return content
+    .map((c) =>
+      c &&
+      typeof c === "object" &&
+      typeof (c as { text?: unknown }).text === "string"
+        ? (c as { text: string }).text
+        : ""
+    )
+    .filter(Boolean)
+    .join(" ")
+}
+
+/** 取出「有 tool_use 记录、但 canUseTool 从未见过该名字」的调用,并附上 CLI 应答 */
+function undecidedTools(
+  observed: Map<string, string>,
+  toolResults: Map<string, { isError: boolean; content: string }>,
+  records: ToolRecord[]
+): UndecidedTool[] {
+  const out: UndecidedTool[] = []
+  for (const [id, name] of observed) {
+    if (!name || records.some((r) => r.name === name)) continue
+    out.push({ name, toolUseId: id, result: toolResults.get(id) })
+  }
+  return out
+}
+
+async function runOnce(
+  systemPrompt: string,
+  question: string,
+  kbBlock: string,
+  env: Record<string, string>
+): Promise<RunResult> {
+  const abortController = new AbortController()
+  const records: ToolRecord[] = []
+  const observed = new Map<string, string>() // tool_use id → 名字
+  const toolResults = new Map<string, { isError: boolean; content: string }>()
+  const state: AssistantTextState = { text: "" }
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const iter = sdkQuery({
+      prompt: buildPrompt(question, undefined, kbBlock),
+      options: agentQueryOptions({
+        abortController,
+        systemPrompt,
+        maxTurns: MAX_TURNS,
+        // 凭据在这里进程内传给 CLI 子进程。agentQueryOptions 默认把 env 设成 sdkEnv()
+        // —— 它会主动剥掉全部 ANTHROPIC_*(让 CLI 去读 settings.json 的 env 块),沙箱
+        // settings.json 刻意不含 env,所以必须在此覆盖回来,否则必然认证失败。
+        // Options.env 是整体替换而非合并,故先铺 sdkEnv() 保住 PATH/HOME/CLAUDE_CONFIG_DIR。
+        env: { ...sdkEnv(), ...env },
+        canUseTool: async (
+          toolName: string,
+          input: Record<string, unknown>
+        ) => {
+          if (isToolAllowed(toolName, input)) {
+            bumpTool(records, toolName, "allow")
+            return { behavior: "allow" as const, updatedInput: input }
+          }
+          bumpTool(records, toolName, "deny")
+          return { behavior: "deny" as const, message: denyMessage(toolName) }
+        },
+      }) as Options,
+    })
+    // 迭代累积独立成 promise,供超时计时器竞速;超时胜出时仍能返回已累积文本。
+    // relay 挂死时 for await 可能永不结束,光 abort 不够(同 agent.ts 的取舍)。
+    const drain = (async () => {
+      for await (const msg of iter) {
+        if (msg.type === "assistant" && Array.isArray(msg.message?.content)) {
+          consumeAssistantContent(state, msg.message.content)
+          for (const block of msg.message.content) {
+            const loose = block as {
+              type?: unknown
+              id?: unknown
+              name?: unknown
+            }
+            if (loose.type === "tool_use") {
+              observed.set(String(loose.id ?? ""), String(loose.name ?? ""))
+            }
+          }
+        }
+        // tool_result 由 CLI 以 user 消息回灌;只留与本次调用相关的文本作证据
+        if (msg.type === "user" && Array.isArray(msg.message?.content)) {
+          for (const block of msg.message.content) {
+            const loose = block as {
+              type?: unknown
+              tool_use_id?: unknown
+              is_error?: unknown
+              content?: unknown
+            }
+            if (loose.type !== "tool_result") continue
+            toolResults.set(String(loose.tool_use_id ?? ""), {
+              isError: loose.is_error === true,
+              content: toolResultText(loose.content),
+            })
+          }
+        }
+      }
+    })()
+    // 超时胜出后 drain 常因 abort 迟到 reject:挂一个吞噬 handler 防 unhandledRejection
+    drain.catch(() => {})
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        abortController.abort()
+        reject(new Error(`回放单题超时(${RUN_TIMEOUT_MS}ms)`))
+      }, RUN_TIMEOUT_MS)
+    })
+    await Promise.race([drain, timeout])
+    return {
+      text: finalAssistantText(state).trim(),
+      tools: records,
+      undecided: undecidedTools(observed, toolResults, records),
+    }
+  } catch (e) {
+    return {
+      text: finalAssistantText(state).trim(),
+      tools: records,
+      undecided: undecidedTools(observed, toolResults, records),
+      error: e instanceof Error ? e.message : String(e),
+    }
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+function toolSummary(
+  records: ToolRecord[],
+  decision: ToolRecord["decision"]
+): string {
+  const hit = records.filter((r) => r.decision === decision)
+  if (!hit.length) return "无"
+  return hit
+    .map((r) => (r.count > 1 ? `${r.name} ×${r.count}` : r.name))
+    .join(", ")
+}
+
+async function main(): Promise<void> {
+  const args = parseArgs(process.argv.slice(2))
+  const templates = readVariantTemplates(args)
+
+  const prod = readProdSettings()
+  writeSandboxConfig(prod.marketplaces, prod.plugins, prod.settings)
+  // 沙箱 config 目录:CLI 据此加载插件并(在其内部)读 settings.json
+  process.env.CLAUDE_CONFIG_DIR = SANDBOX_CONFIG_DIR
+
+  // 只读打开:不跑 openDb()——它会 pragma WAL + 迁移,对库有写副作用(同
+  // scripts/check-kb-freshness.ts 的取舍)。回放是审计动作,不能改生产库。
+  const dbPath = databaseOpenPath(process.env.DB_PATH ?? "./data/agent.db")
+  const db = new Database(dbPath, { fileMustExist: true, readonly: true })
+  try {
+    sqliteVec.load(db)
+    const repo = new RepoClass(db)
+    const cfg = JSON.parse(repo.getConfigRow("app") ?? "{}") as {
+      brandName?: string
+      brandDescription?: string
+      supportUrl?: string
+      kbPrefetchEnabled?: boolean
+      kbPrefetchTopK?: number
+      kbPrefetchMaxDistance?: number
+    }
+    // 与生产 agent.ts 同源:走 resolveBrand,不在这里另立默认值
+    const brand = resolveBrand({
+      name: cfg.brandName,
+      description: cfg.brandDescription,
+    })
+    const supportUrl = cfg.supportUrl?.trim() ?? ""
+    const topK = cfg.kbPrefetchTopK ?? DEFAULT_KB_PREFETCH_TOP_K
+    const maxDistance =
+      cfg.kbPrefetchMaxDistance ?? DEFAULT_KB_PREFETCH_MAX_DISTANCE
+    // 回放一律注入候选;若生产关了预检索,这条差异必须在报告头显式说出来
+    const kbPrefetchEnabled = cfg.kbPrefetchEnabled ?? true
+
+    const variants = new Map<string, string>()
+    for (const name of args.variants) {
+      variants.set(
+        name,
+        name === "clite"
+          ? buildDefaultSystem({ brand, supportUrl })
+          : renderVariant(templates.get(name) ?? "", brand, supportUrl)
+      )
+    }
+
+    // 抽样只读库、不烧 API,故 dry-run 也走一遍:这样能只核样本不跑模型
+    const sample = sampleQuestions(repo, args)
+    if (!sample.picked.length) {
+      throw new Error(
+        `样本为空:proactive_replies 共 ${sample.total} 行,` +
+          `通过长度过滤(${MIN_QUESTION_CHARS}~${MAX_QUESTION_CHARS} 字符)的有 ${sample.eligible} 条。` +
+          `\n--limit=${args.limit} 没有可跑的题,拒绝写空报告。`
+      )
+    }
+
+    if (args.dryRun) {
+      for (const [name, text] of variants) {
+        console.log(
+          `\n===== ${name} (chars=${text.length} sha256=${sha256(text)}) =====\n${text}`
+        )
+      }
+      console.log(
+        `\n===== 样本(${sample.mode === "ids" ? `--ids 显式指定` : `--seed ${sample.seed}`},共 ${sample.picked.length} 题) =====`
+      )
+      console.log(`选中 id: ${sample.picked.map((r) => r.id).join(", ")}`)
+      for (const row of sample.picked) {
+        console.log(`  #${row.id} ${row.question.slice(0, 40)}`)
+      }
+      return
+    }
+
+    const prepared = await prepareQuestions(
+      repo,
+      sample.picked,
+      topK,
+      maxDistance
+    )
+
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-")
+    const outDir = join(ARTIFACT_DIR, stamp)
+    const renderedDir = join(outDir, "variants")
+    mkdirSync(renderedDir, { recursive: true })
+    // 渲染后的正文落盘:报告里的判定要对得上确切输入,光有 sha256 不够复核
+    for (const [name, text] of variants) {
+      writeFileSync(join(renderedDir, `${name}.txt`), text, "utf8")
+    }
+    const reportPath = join(outDir, "report.md")
+    const lines: string[] = [
+      `# prompt 回放报告 ${stamp}`,
+      "",
+      "## 运行环境",
+      "",
+      `- git: ${gitProvenance()}`,
+      `- 变体: ${args.variants.join(", ")}`,
+      `- 题目数: ${sample.picked.length}(${sample.mode === "ids" ? `--ids 显式指定,--limit ${args.limit} 被忽略` : `--limit ${args.limit}`})`,
+      `- 样本来源: proactive_replies 共 ${sample.total} 行,按长度 ${MIN_QUESTION_CHARS}~${MAX_QUESTION_CHARS} 字符(JS 长度)过滤得 ${sample.eligible} 条${sample.mode === "ids" ? ";--ids 模式不套该长度过滤,按给定 id 原样取" : ""}`,
+      sample.mode === "ids"
+        ? `- 抽样: --ids 显式钉住(按给定顺序;--seed ${sample.seed} 被忽略)`
+        : `- 抽样: --seed ${sample.seed}(按 md5("${sample.seed}:<id>") 升序取前 ${sample.picked.length} 条)`,
+      `- 选中 id (${sample.picked.length}): ${sample.picked.map((r) => r.id).join(", ")}`,
+      "  - 稳定性:同 seed 同库完全可复现;库增长时仅当新行的哈希排名挤进前 N 才会改变样本",
+      "    —— 这是哈希排序的固有性质,不是 bug。跨轮对比前先核对上面这行 id 是否一致。",
+      "  - 有偏:只含主动补位链路记录过的问题,且仅限生效群白名单,不代表真实提问分布",
+      "- 判读口径: 单题结果受采样随机性支配(实测同题同 prompt 三次运行,old 的工具调用数为 0/3/0),不得按单题判读;",
+      "  必须按批次聚合,并按每题 KB top-1 距离分桶看(有据可依 / 无据需兜底)。",
+      `- 样本分桶(KB top-1 距离): ${bucketSummary(prepared)}`,
+      `- 模型: ANTHROPIC_MODEL=${prod.env.ANTHROPIC_MODEL ?? "(未设置)"};settings.model=${JSON.stringify(prod.settings.model ?? null)}`,
+      `- 预算: maxTurns=${MAX_TURNS};单题超时=${RUN_TIMEOUT_MS}ms(对齐 agent.ts)`,
+      `- KB: topK=${topK};maxDistance=${maxDistance};每片截断=${DEFAULT_KB_PREFETCH_MAX_CHARS} 字符(对齐 makeKbPrefetch)`,
+      `- 沙箱 config: ${SANDBOX_CONFIG_DIR}(无 hooks;插件: ${Object.keys(prod.plugins).join(", ")})`,
+      `- 沙箱行为开关: ${SANDBOX_SETTING_KEYS.map((k) => `${k}=${JSON.stringify(prod.settings[k] ?? null)}`).join(";")}`,
+      `- 预检索开关: kbPrefetchEnabled=${kbPrefetchEnabled}`,
+    ]
+    if (!kbPrefetchEnabled) {
+      lines.push(
+        "- ⚠ 生产未启用预检索,本次回放仍注入候选片段,**与生产分叉**,结论不可直接外推到线上。"
+      )
+    }
+    lines.push(
+      `- 渲染后正文: ${args.variants.map((n) => `variants/${n}.txt`).join(", ")}`
+    )
+    for (const [name, text] of variants) {
+      lines.push(`  - ${name}: ${text.length} chars, sha256=${sha256(text)}`)
+    }
+    lines.push("")
+    const flush = (): void => {
+      writeFileSync(reportPath, lines.join("\n"), "utf8")
+    }
+    // 先落一份头,之后每个变体跑完都重写一次:任何中断都保住已完成结果
+    flush()
+
+    for (const item of prepared) {
+      const q = item.question
+      const top1 = item.hits[0]
+      lines.push(
+        `---`,
+        "",
+        `## #${item.id} ${redactForReport(q, 200)}`,
+        "",
+        `- KB top-1 距离: ${top1 ? top1.distance.toFixed(4) : "无命中"}`
+      )
+      if (item.error) {
+        lines.push(
+          `- KB 检索失败,本题不注入候选: ${redactForReport(item.error)}`
+        )
+      }
+      lines.push(`- KB 命中 ${item.hits.length} 条:`)
+      if (!item.hits.length) lines.push("  - (无)")
+      item.hits.forEach((h, i) => {
+        lines.push(
+          `  - [${i + 1}] distance=${h.distance.toFixed(4)} | ${redactForReport(h.content, MAX_KB_PREVIEW_CHARS)}`
+        )
+      })
+      lines.push("")
+
+      for (const [name, systemPrompt] of variants) {
+        const r = await runOnce(systemPrompt, q, item.kbBlock, prod.env)
+        lines.push(
+          `### ${name}`,
+          "",
+          `- 工具调用: ${toolSummary(r.tools, "allow")}`,
+          `- 工具被拒: ${toolSummary(r.tools, "deny")}`,
+          `- 结果: ${r.text.length} chars${r.error ? `;错误: ${redactForReport(r.error)}` : ""}`
+        )
+        for (const u of r.undecided) {
+          lines.push(
+            `- 未经判定的工具(异常,请排查): ${u.name} (tool_use_id=${u.toolUseId})`
+          )
+          // CLI 的应答是定性依据:未知工具名 vs 权限被绕过,只能靠它区分
+          lines.push(
+            u.result
+              ? `  - tool_result: is_error=${u.result.isError} | ${redactForReport(u.result.content)}`
+              : "  - tool_result: 未收到(该 tool_use 无应答)"
+          )
+        }
+        lines.push(
+          "",
+          "```text",
+          redactForReport(r.text, 1200),
+          "```",
+          "",
+          "- 判定: [ ]无依据断言 [ ]漏工具 [ ]越界泄密 [ ]答非所问",
+          ""
+        )
+        flush()
+        // stdout 也可能被重定向落盘:同样先脱敏再截断,不能直出原始题面
+        console.log(
+          `[${name}] ${redactForReport(q, 40)} → ${r.text.length} chars`
+        )
+      }
+    }
+    console.log(`报告: ${reportPath}`)
+  } finally {
+    db.close()
+  }
+}
+
+main().catch((e: unknown) => {
+  if (e instanceof UsageError) {
+    console.error(e.message)
+    console.error(USAGE)
+  } else {
+    console.error(e instanceof Error ? e.message : e)
+  }
+  process.exit(1)
+})

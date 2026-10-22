@@ -2,7 +2,10 @@ packages: []
 
 # 依赖安全:父级钉版卡住的三条高危链,统一顶到官方修复版(仅覆盖未达标实例)
 overrides:
-  "adm-zip@<0.6.0": "^0.6.0"
+  # GHSA-vwc7-r8mq-g2x9: destination symlink overwrite; fixed in >=0.6.1
+  "adm-zip@<0.6.1": "^0.6.1"
+  # GHSA-2883-xcg3-v3hh: empty YAML merge sources can exhaust CPU; fixed in >=4.3.2
+  "js-yaml@<4.3.2": "4.3.2"
   "fast-uri@<3.1.6": "^3.1.6"
   "sharp@<0.35.0": "^0.35.4"
   # 1.24.x 起官方包移除了 macOS x64 binding；1.23.2 恢复 macOS x64，

@@ -4,7 +4,7 @@ import {
   findBlockedLink,
   isLinkAllowed,
   normalizeLinkWhitelist,
-} from "@/lib/qq/link-whitelist"
+} from "@/lib/channels/qq/link-whitelist"
 
 describe("QQ 链接白名单", () => {
   it("提取链接并去掉常见标点", () => {

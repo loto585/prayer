@@ -1,7 +1,7 @@
-import { NextRequest, NextResponse } from "next/server"
+import { NextResponse } from "next/server"
 import { getRuntime } from "@/lib/runtime"
-import { ok, fail } from "@/lib/api"
-import { getNameCache, type GroupNameRow } from "@/lib/name-cache"
+import { ok, fail, safeApiError } from "@/lib/core/api"
+import { getNameCache, type GroupNameRow } from "@/lib/core/chat/name-cache"
 
 function parseGroups(raw: unknown[]): GroupNameRow[] {
   return raw
@@ -30,21 +30,22 @@ async function fetchGroupsFresh(): Promise<GroupNameRow[] | null> {
   return groupsInflight
 }
 
-export async function GET(req: NextRequest): Promise<NextResponse> {
-  const cache = getNameCache()
-  const refresh = req.nextUrl.searchParams.get("refresh") === "1"
-  if (!refresh) {
+export async function GET(): Promise<NextResponse> {
+  try {
+    const cache = getNameCache()
     const hit = cache.getGroupsList()
     if (hit) {
       return NextResponse.json(ok(hit))
     }
-  }
 
-  const list = await fetchGroupsFresh()
-  if (!list) {
-    return NextResponse.json(fail("bot 未连接或无法获取群列表"), {
-      status: 503,
-    })
+    const list = await fetchGroupsFresh()
+    if (!list) {
+      return NextResponse.json(fail("bot 未连接或无法获取群列表"), {
+        status: 503,
+      })
+    }
+    return NextResponse.json(ok(list))
+  } catch (err) {
+    return NextResponse.json(fail(safeApiError(err)), { status: 500 })
   }
-  return NextResponse.json(ok(list))
 }

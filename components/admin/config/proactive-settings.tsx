@@ -9,7 +9,6 @@ import {
 import { Input } from "@/components/ui/input"
 import { Checkbox } from "@/components/ui/checkbox"
 import { SectionCard } from "@/components/admin/section-card"
-import { ConfigTabContent } from "./config-tab-content"
 
 import { msToSec, secToMs } from "./form-values"
 import type { ConfigForm } from "./use-config-form"
@@ -19,74 +18,81 @@ export function ProactiveSettings({
   setCfg,
   updateField,
   fieldValue,
-  embedded = false,
-}: Pick<ConfigForm, "cfg" | "setCfg" | "updateField" | "fieldValue"> & {
-  embedded?: boolean
-}) {
+}: Pick<ConfigForm, "cfg" | "setCfg" | "updateField" | "fieldValue">) {
   return (
-    <ConfigTabContent value="proactive" embedded={embedded}>
-      <SectionCard
-        title="主动回复"
-        description="无人应答时谨慎补位。也可在主动回复页一键开关。"
-      >
-        <FieldGroup>
-          <Field orientation="horizontal">
-            <Checkbox
-              id="proactiveEnabled"
-              checked={cfg.proactiveEnabled}
-              onCheckedChange={(v) =>
-                setCfg({ ...cfg, proactiveEnabled: v === true })
-              }
-            />
-            <FieldLabel htmlFor="proactiveEnabled">
-              启用主动回复(全局)
-            </FieldLabel>
-          </Field>
-          <Field>
-            <FieldLabel>静默阈值(秒)</FieldLabel>
-            <Input
-              inputMode="numeric"
-              value={msToSec(cfg.proactiveSilenceMs)}
-              onChange={(e) =>
-                setCfg({
-                  ...cfg,
-                  proactiveSilenceMs: secToMs(e.target.value),
-                })
-              }
-            />
-            <FieldDescription>
-              默认 180 秒无人应答才主动补位。需即时补位可填几秒。
-            </FieldDescription>
-          </Field>
-          <Field>
-            <FieldLabel>扫描间隔(秒)</FieldLabel>
-            <Input
-              inputMode="numeric"
-              value={msToSec(cfg.proactiveScanMs)}
-              onChange={(e) =>
-                setCfg({
-                  ...cfg,
-                  proactiveScanMs: secToMs(e.target.value),
-                })
-              }
-            />
-            <FieldDescription>默认 60 秒,最小 1 秒。</FieldDescription>
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="proactiveMaxPerScan">
-              单次最多补位数
-            </FieldLabel>
-            <Input
-              id="proactiveMaxPerScan"
-              inputMode="numeric"
-              value={fieldValue("proactiveMaxPerScan")}
-              onChange={(e) =>
-                updateField("proactiveMaxPerScan", e.target.value)
-              }
-            />
-          </Field>
-        </FieldGroup>
-      </SectionCard>
-    </ConfigTabContent>
+    <SectionCard
+      title="主动回复"
+      description="无人应答时谨慎补位。SQLite 中的持久化配置会覆盖环境变量默认值；环境变量仅在首次初始化时生效。"
+    >
+      <FieldGroup>
+        <Field orientation="horizontal">
+          <Checkbox
+            id="proactiveEnabled"
+            checked={cfg.proactiveEnabled}
+            onCheckedChange={(v) =>
+              setCfg({ ...cfg, proactiveEnabled: v === true })
+            }
+          />
+          <FieldLabel htmlFor="proactiveEnabled">启用主动回复(全局)</FieldLabel>
+        </Field>
+        <Field>
+          <FieldLabel>静默阈值(秒)</FieldLabel>
+          <Input
+            inputMode="numeric"
+            value={msToSec(cfg.proactiveSilenceMs)}
+            onChange={(e) =>
+              setCfg({
+                ...cfg,
+                proactiveSilenceMs: secToMs(e.target.value),
+              })
+            }
+          />
+          <FieldDescription>
+            默认 180 秒无人应答才主动补位，最小 30 秒。
+          </FieldDescription>
+        </Field>
+        <Field>
+          <FieldLabel>扫描间隔(秒)</FieldLabel>
+          <Input
+            inputMode="numeric"
+            value={msToSec(cfg.proactiveScanMs)}
+            onChange={(e) =>
+              setCfg({
+                ...cfg,
+                proactiveScanMs: secToMs(e.target.value),
+              })
+            }
+          />
+          <FieldDescription>
+            默认 60 秒，最小 10 秒；用于防止误配导致高频扫描。
+          </FieldDescription>
+        </Field>
+        <Field>
+          <FieldLabel htmlFor="proactiveMaxPerScan">单次最多补位数</FieldLabel>
+          <Input
+            id="proactiveMaxPerScan"
+            inputMode="numeric"
+            value={fieldValue("proactiveMaxPerScan")}
+            onChange={(e) => updateField("proactiveMaxPerScan", e.target.value)}
+          />
+        </Field>
+        <Field>
+          <FieldLabel htmlFor="proactiveCandidateBudget">
+            单次最多尝试候选数
+          </FieldLabel>
+          <Input
+            id="proactiveCandidateBudget"
+            inputMode="numeric"
+            value={fieldValue("proactiveCandidateBudget")}
+            onChange={(e) =>
+              updateField("proactiveCandidateBudget", e.target.value)
+            }
+          />
+          <FieldDescription>
+            默认 12，最多 50；判定/模型异常时会保留游标以便重试。
+          </FieldDescription>
+        </Field>
+      </FieldGroup>
+    </SectionCard>
   )
 }

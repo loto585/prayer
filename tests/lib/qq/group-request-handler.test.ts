@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { bus } from "@/lib/bus"
-import { registerGroupRequestHandler } from "@/lib/qq/group-request-handler"
+import { bus } from "@/lib/core/bus"
+import { registerGroupRequestHandler } from "@/lib/conversation/group-request-handler"
 
 beforeEach(() => bus.removeAllListeners())
 

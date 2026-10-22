@@ -3,9 +3,9 @@
 import { useEffect, useMemo, useState } from "react"
 import { toast } from "sonner"
 import { useLive } from "@/components/live-provider"
-import type { AppConfig as Cfg } from "@/lib/config/schema"
-import type { ChatRef } from "@/lib/channels/types"
-import { excludeAdminSurface } from "@/lib/config/chats"
+import type { AppConfig as Cfg } from "@/lib/core/config/schema"
+import type { ChatRef } from "@/lib/core/chat/types"
+import { excludeAdminSurface } from "@/lib/core/config/chats"
 
 type ScalarConfigKey = Exclude<
   {
@@ -66,6 +66,8 @@ interface AdminCandidate {
 export function useConfigForm() {
   const { status } = useLive()
   const [cfg, setCfg] = useState<Cfg | null>(null)
+  /** 上次保存(或加载)时的配置快照,用来判断有没有未保存改动 */
+  const [savedSnapshot, setSavedSnapshot] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [groups, setGroups] = useState<
     { groupId: number; groupName: string }[] | null
@@ -90,6 +92,7 @@ export function useConfigForm() {
         if (controller.signal.aborted) return
         if (!result.ok) throw new Error(result.error ?? "配置加载失败")
         setCfg(result.data as Cfg)
+        setSavedSnapshot(JSON.stringify(result.data))
         setError(null)
       })
       .catch((error: unknown) => {
@@ -240,6 +243,7 @@ export function useConfigForm() {
           : enabledChats
         const savedTg = tgChatIds(saved)
         setCfg(data)
+        setSavedSnapshot(JSON.stringify(data))
         setTgChatDraft("")
         if (savedTg.length === 0 && !cfg.telegramBotToken) {
           toast.success("配置已保存并生效")
@@ -385,8 +389,13 @@ export function useConfigForm() {
     return null
   }
 
+  const dirty = Boolean(
+    cfg && savedSnapshot && JSON.stringify(cfg) !== savedSnapshot
+  )
+
   return {
     cfg,
+    dirty,
     setCfg,
     updateField,
     fieldValue,

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server"
-import { usageStats, cacheHitRatio, type UsageStat } from "@/lib/usage-stats"
+import { usageStats, cacheHitRatio, type UsageStat } from "@/lib/model/stats/usage"
 import {
   toolStats,
   kbCoverage,
@@ -9,13 +9,12 @@ import {
   KB_GROUNDED_TOOL,
   type KbCoverage,
   type ToolStat,
-} from "@/lib/tool-stats"
-import { sharedDb } from "@/lib/db/shared"
-import { Repo } from "@/lib/db/repo"
-import { getConfig } from "@/lib/config-store"
-import { ok } from "@/lib/api"
+} from "@/lib/model/stats/tool"
+import { getAppContext } from "@/lib/core/app-context"
+import { fail, ok, safeApiError } from "@/lib/core/api"
+import { emitErrorSafely } from "@/lib/core/bus"
 
-// 调用点中文名(与 lib/usage-stats.ts 的 UsageSite 对应);顺序即展示顺序
+// 调用点中文名(与 lib/model/stats/usage.ts 的 UsageSite 对应);顺序即展示顺序
 const SITE_ORDER = [
   "agent",
   "intent",
@@ -23,6 +22,7 @@ const SITE_ORDER = [
   "reflect",
   "compact",
   "promote",
+  "promote-compose",
   "topic",
   "announce",
 ] as const
@@ -33,6 +33,7 @@ const SITE_LABEL: Record<string, string> = {
   reflect: "反思沉淀",
   compact: "反思压缩",
   promote: "升格评审",
+  "promote-compose": "升格成文",
   topic: "问题归类",
   announce: "公告起草",
 }
@@ -146,10 +147,7 @@ export async function GET(): Promise<NextResponse> {
     rows: { site: string; label: string; count: number; costUsd: number }[]
   } | null = null
   try {
-    const cfg = getConfig(
-      new Repo(sharedDb(process.env.DB_PATH ?? "./data/agent.db"))
-    )
-    const repo = new Repo(sharedDb(cfg.dbPath))
+    const { cfg, repo } = getAppContext()
     const drows = repo.usageDaily(day)
     daily = {
       day,
@@ -163,8 +161,18 @@ export async function GET(): Promise<NextResponse> {
       })),
     }
     tools.daily = toolSection(groupDailyTools(repo.toolStatsDaily(day)).agent)
-  } catch {
-    /* 持久化读失败不阻断内存快照 */
+  } catch (err) {
+    // A database read failure must not be presented as a healthy response with
+    // `daily: null`; callers need a retryable signal while process metrics stay
+    // available in logs for diagnosis.
+    emitErrorSafely({
+      scope: "usage.persistence.read",
+      err,
+      userVisible: false,
+    })
+    return NextResponse.json(fail(safeApiError(err, "持久化用量读取失败")), {
+      status: 503,
+    })
   }
 
   return NextResponse.json(

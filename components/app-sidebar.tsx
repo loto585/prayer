@@ -16,7 +16,7 @@ import {
   Puzzle,
   LifeBuoy,
   TrendingUp,
-  Megaphone,
+  ShieldCheck,
 } from "lucide-react"
 import {
   Sidebar,
@@ -30,8 +30,9 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
 } from "@/components/ui/sidebar"
+import { NavLinkIcon } from "@/components/nav-link-icon"
 import { useLive } from "@/components/live-provider"
-import { DEFAULT_BRAND } from "@/lib/brand"
+import { DEFAULT_BRAND } from "@/lib/core/brand"
 
 const navGroups = [
   {
@@ -65,11 +66,11 @@ const navGroups = [
   {
     label: "系统",
     items: [
-      { href: "/admin/qq-tools", label: "QQ 运维", icon: Megaphone },
       { href: "/admin/config", label: "配置", icon: Settings },
       { href: "/admin/groups", label: "生效会话", icon: Users },
       { href: "/admin/capabilities", label: "能力", icon: Boxes },
       { href: "/admin/plugins", label: "插件", icon: Puzzle },
+      { href: "/admin/audit", label: "管理审计", icon: ShieldCheck },
     ],
   },
 ]
@@ -79,17 +80,21 @@ export function AppSidebar() {
   const { overview } = useLive()
   const brandName = overview?.brandName?.trim() || DEFAULT_BRAND.name
   return (
-    <Sidebar>
+    <Sidebar variant="inset">
       <SidebarHeader>
-        <div className="flex items-center gap-2 px-2 py-1.5">
-          <div className="flex size-8 items-center justify-center rounded-md bg-primary text-primary-foreground">
-            <Bot className="size-5" />
-          </div>
-          <div className="flex flex-col leading-tight">
-            <span className="text-sm font-semibold">{brandName}</span>
-            <span className="text-xs text-muted-foreground">客服中台</span>
-          </div>
-        </div>
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton size="lg" render={<Link href="/admin" />}>
+              <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground">
+                <Bot className="size-4" />
+              </div>
+              <div className="grid flex-1 text-left text-sm leading-tight">
+                <span className="truncate font-medium">{brandName}</span>
+                <span className="truncate text-xs">客服中台</span>
+              </div>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
       </SidebarHeader>
       <SidebarContent>
         {navGroups.map((group) => (
@@ -106,14 +111,12 @@ export function AppSidebar() {
                   return (
                     <SidebarMenuItem key={n.href}>
                       <SidebarMenuButton
-                        asChild
+                        render={<Link href={n.href} />}
                         isActive={active}
                         tooltip={n.label}
                       >
-                        <Link href={n.href}>
-                          <n.icon />
-                          <span>{n.label}</span>
-                        </Link>
+                        <NavLinkIcon icon={n.icon} />
+                        <span>{n.label}</span>
                       </SidebarMenuButton>
                       {badge === "human" &&
                         (overview?.humanSessions ?? 0) > 0 && (

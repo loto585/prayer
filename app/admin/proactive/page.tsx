@@ -4,9 +4,6 @@ import { useState } from "react"
 import { toast } from "sonner"
 import {
   Zap,
-  Clock,
-  Timer,
-  Hash,
   MessageSquareReply,
   User,
   ThumbsUp,
@@ -18,22 +15,23 @@ import { VirtualList } from "@/components/admin/virtual-list"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Switch } from "@/components/ui/switch"
 import {
-  Table,
   TableBody,
   TableCell,
   TableHead,
   TableHeader,
   TableRow,
 } from "@/components/ui/table"
+import { TableShell } from "@/components/admin/table-shell"
 import { RelativeTime } from "@/components/relative-time"
 import { PageShell } from "@/components/admin/page-shell"
 import { PageHeader } from "@/components/admin/page-header"
-import { MetricBadge, MetricBadgeRow } from "@/components/admin/stat"
+import { MetricRows } from "@/components/admin/stat"
 import { SectionCard } from "@/components/admin/section-card"
 import { ItemCard } from "@/components/admin/item-card"
 import { DataState } from "@/components/admin/data-state"
 import { usePolling } from "@/components/admin/use-polling"
-import { useGroupNames } from "@/lib/group-name"
+import { useGroupNames } from "@/lib/core/chat/group-name"
+import { formatDuration } from "@/lib/core/format-duration"
 
 interface GroupRow {
   groupId: number
@@ -64,10 +62,6 @@ interface Data {
   groups: GroupRow[]
   replies: Reply[]
 }
-
-// 秒级配置也要可读:< 60s 显示秒,否则分
-const min = (ms: number) =>
-  ms < 60_000 ? `${Math.round(ms / 1000)} 秒` : `${Math.round(ms / 60000)} 分`
 
 export default function ProactivePage() {
   const {
@@ -135,33 +129,30 @@ export default function ProactivePage() {
         }
       />
 
-      <MetricBadgeRow>
-        <MetricBadge
-          icon={Zap}
-          label="状态"
-          loading={loading}
-          value={!d ? "—" : d.config.enabled ? "已启用" : "已关闭"}
-          tone={d?.config.enabled ? "primary" : undefined}
-        />
-        <MetricBadge
-          icon={Timer}
-          label="静默阈值"
-          value={d ? min(d.config.silenceMs) : "—"}
-          loading={loading}
-        />
-        <MetricBadge
-          icon={Clock}
-          label="扫描周期"
-          value={d ? min(d.config.scanMs) : "—"}
-          loading={loading}
-        />
-        <MetricBadge
-          icon={Hash}
-          label="单次上限"
-          value={d ? d.config.maxPerScan : "—"}
-          loading={loading}
-        />
-      </MetricBadgeRow>
+      <MetricRows
+        items={[
+          {
+            label: "状态",
+            value: !d ? "—" : d.config.enabled ? "已启用" : "已关闭",
+            hint: "全局开关,可在右上角切换;单群可在生效会话页覆盖。",
+          },
+          {
+            label: "静默阈值",
+            value: d ? formatDuration(d.config.silenceMs) : "—",
+            hint: "群内无人应答超过此时长,机器人才会补位。",
+          },
+          {
+            label: "扫描周期",
+            value: d ? formatDuration(d.config.scanMs) : "—",
+            hint: "后台扫描未应答消息的间隔。",
+          },
+          {
+            label: "单次上限",
+            value: d ? d.config.maxPerScan : "—",
+            hint: "每轮扫描最多补位的条数,防止刷屏。",
+          },
+        ]}
+      />
 
       <SectionCard
         title="每群进度"
@@ -177,7 +168,7 @@ export default function ProactivePage() {
           emptyDescription="在配置页选择生效群并启用主动回复后，进度会显示在这里。"
           skeleton={<Skeleton className="h-40 w-full" />}
         >
-          <Table>
+          <TableShell minWidth="min-w-[640px]">
             <TableHeader>
               <TableRow>
                 <TableHead>群</TableHead>
@@ -215,7 +206,7 @@ export default function ProactivePage() {
                     {g.lagMs == null
                       ? "未扫描"
                       : g.lagMs > 0
-                        ? min(g.lagMs)
+                        ? formatDuration(g.lagMs)
                         : "0"}
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
@@ -224,12 +215,11 @@ export default function ProactivePage() {
                 </TableRow>
               ))}
             </TableBody>
-          </Table>
+          </TableShell>
         </DataState>
       </SectionCard>
 
       <SectionCard
-        icon={MessageSquareReply}
         title={`最近主动回复${d ? ` (${d.total})` : ""}`}
         description="可标记回复是否恰当，便于后续优化。"
       >
