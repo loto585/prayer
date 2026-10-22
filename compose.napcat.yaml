@@ -7,7 +7,7 @@ services:
     environment:
       # NapCat entrypoint uses -q for the selected QQ account on restart.
       # Override with NAPCAT_ACCOUNT when deploying another bot account.
-      ACCOUNT: ${NAPCAT_ACCOUNT:-3847444236}
+      ACCOUNT: ${NAPCAT_ACCOUNT:-3433146658}
     ports:
       - "127.0.0.1:3001:3001"
       - "127.0.0.1:6099:6099"
